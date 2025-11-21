@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 環境變數與機密資訊
+.env
+
+# 臨時文件
+temp_fb_downloads/
+temp_downloads/
+*.tmp
+
+# 日誌文件
+logs/
+*.log
+nohup.out
+
+# 配置（如果包含敏感信息）
+# config.py
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Flask
+instance/
+.webassets-cache
+
+# 日誌
+*.log
+*.md
+!README.md
+test*
+debug*

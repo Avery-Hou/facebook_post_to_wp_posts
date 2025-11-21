@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Facebook 貼文發布到 WordPress</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        /* Tab 樣式 */
+        .tabs {
+            display: flex;
+            background: #f5f5f5;
+            border-bottom: 2px solid #e0e0e0;
+        }
+
+        .tab-button {
+            flex: 1;
+            padding: 15px 20px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            color: #666;
+            transition: all 0.3s;
+            border-bottom: 3px solid transparent;
+        }
+
+        .tab-button:hover {
+            background: #ececec;
+            color: #333;
+        }
+
+        .tab-button.active {
+            color: #667eea;
+            background: white;
+            border-bottom-color: #667eea;
+        }
+
+        .tab-content {
+            display: none;
+            padding: 40px;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+            font-size: 14px;
+        }
+
+        .form-group input[type="text"],
+        .form-group input[type="date"],
+        .form-group input[type="time"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .checkbox-group {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 12px;
+            background: #fafafa;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .checkbox-item {
+            padding: 8px 12px;
+            display: inline-flex;
+            align-items: center;
+            border-radius: 6px;
+            background: white;
+            border: 1px solid #e0e0e0;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .checkbox-item:hover {
+            background: #f0f0f0;
+            border-color: #667eea;
+            transform: translateY(-1px);
+            box-shadow: 0 2px 4px rgba(102, 126, 234, 0.2);
+        }
+
+        .checkbox-item input[type="checkbox"] {
+            width: 16px;
+            height: 16px;
+            margin-right: 8px;
+            cursor: pointer;
+            accent-color: #667eea;
+        }
+
+        .checkbox-item label {
+            margin: 0;
+            cursor: pointer;
+            font-weight: normal;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .checkbox-loading {
+            text-align: center;
+            padding: 20px;
+            color: #999;
+            font-size: 14px;
+            width: 100%;
+        }
+
+        .datetime-group {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 15px;
+        }
+
+        .btn-submit {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .btn-submit:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-submit:active {
+            transform: translateY(0);
+        }
+
+        .btn-submit:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .message {
+            display: none;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .message.active {
+            display: block;
+        }
+
+        .message.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .message.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .message a {
+            color: inherit;
+            font-weight: 600;
+            text-decoration: underline;
+        }
+
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 4px;
+        }
+
+        .info-box p {
+            font-size: 13px;
+            color: #0c5393;
+            line-height: 1.6;
+        }
+
+        .loading-text {
+            color: #666;
+            font-size: 14px;
+        }
+
+        /* 批次表格樣式 */
+        .results-container {
+            margin-top: 30px;
+        }
+
+        .posts-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: white;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .posts-table thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .posts-table th {
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .posts-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 13px;
+        }
+
+        .posts-table tr:hover {
+            background: #f5f5f5;
+        }
+
+        .post-title {
+            font-weight: 600;
+            color: #333;
+        }
+
+        .post-content {
+            color: #666;
+            font-size: 12px;
+        }
+
+        .post-images {
+            display: flex;
+            gap: 5px;
+            flex-wrap: wrap;
+        }
+
+        .post-image-preview {
+            width: 50px;
+            height: 50px;
+            object-fit: cover;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        .post-image-preview:hover {
+            transform: scale(1.1);
+        }
+
+        .post-date {
+            color: #999;
+            font-size: 12px;
+        }
+
+        .image-count {
+            display: inline-block;
+            padding: 4px 8px;
+            background: #667eea;
+            color: white;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .results-summary {
+            margin-top: 20px;
+            padding: 15px;
+            background: #e7f3ff;
+            border-radius: 8px;
+            text-align: center;
+            font-size: 14px;
+            color: #0c5393;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📱 Facebook 貼文發布工具</h1>
+            <p>將 Facebook 粉絲團貼文快速發布到 WordPress 網站</p>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab-button active" onclick="switchTab('single')">單篇發布</button>
+            <button class="tab-button" onclick="switchTab('batch')">批次抓取</button>
+        </div>
+
+        <!-- Tab 1: 單篇發布 -->
+        <div id="tab-single" class="tab-content active">
+            <div class="info-box">
+                <p><strong>使用說明：</strong></p>
+                <p>1. 輸入 Facebook 公開貼文的完整 URL</p>
+                <p>2. 選擇文章標籤和分類</p>
+                <p>3. 設定發布日期和時間（預設為今天下午8:00）</p>
+                <p>4. 點擊發布按鈕，系統會自動抓取貼文內容和圖片並發布到 WordPress</p>
+            </div>
+
+            <div id="message-single" class="message"></div>
+
+            <form id="publishForm">
+                <div class="form-group">
+                    <label for="fb_url">Facebook 貼文 URL *</label>
+                    <input
+                        type="text"
+                        id="fb_url"
+                        name="fb_url"
+                        placeholder="https://www.facebook.com/..."
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label>中文版 - 文章標籤（可多選）</label>
+                    <div class="checkbox-group" id="tags-container">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>中文版 - 文章分類（可多選）</label>
+                    <div class="checkbox-group" id="categories-container">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>英文版 - 文章標籤（可多選）</label>
+                    <div class="checkbox-group" id="tags-container-en">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>英文版 - 文章分類（可多選）</label>
+                    <div class="checkbox-group" id="categories-container-en">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>發布語言（可多選）</label>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="lang-zh" name="languages" value="zh" checked>
+                            <label for="lang-zh">中文</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="lang-en" name="languages" value="en">
+                            <label for="lang-en">英文（將使用 AI 自動翻譯）</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>發布日期與時間</label>
+                    <div class="datetime-group">
+                        <div>
+                            <input
+                                type="date"
+                                id="publish_date"
+                                name="publish_date"
+                            >
+                        </div>
+                        <div>
+                            <input
+                                type="time"
+                                id="publish_time"
+                                name="publish_time"
+                                value="20:00"
+                            >
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-submit" id="submitBtn">
+                    🚀 發布到 WordPress
+                </button>
+            </form>
+
+            <div class="loading" id="loading-single">
+                <div class="spinner"></div>
+                <p class="loading-text">正在處理中，請稍候...</p>
+                <p class="loading-text" style="font-size: 12px; margin-top: 10px;">
+                    (抓取貼文、下載圖片、上傳到 WordPress)
+                </p>
+            </div>
+        </div>
+
+        <!-- Tab 2: 批次抓取 -->
+        <div id="tab-batch" class="tab-content">
+            <div class="info-box">
+                <p><strong>智能批次抓取說明：</strong></p>
+                <p>1. 輸入 Facebook 粉絲團的 URL（例如：https://www.facebook.com/yourpage）</p>
+                <p>2. 選擇起始日期，系統會自動滾動並抓取該日期<strong>之後</strong>的所有貼文</p>
+                <p>3. 🔄 系統會持續自動滾動，直到遇到早於設定日期的貼文才停止</p>
+                <p>4. 📊 抓取完成後會顯示所有符合條件的貼文供您預覽</p>
+                <p>5. 💡 這個功能特別適合定期同步粉絲團的最新貼文</p>
+            </div>
+
+            <div id="message-batch" class="message"></div>
+
+            <form id="batchForm">
+                <div class="form-group">
+                    <label for="page_url">粉絲團 URL *</label>
+                    <input
+                        type="text"
+                        id="page_url"
+                        name="page_url"
+                        placeholder="https://www.facebook.com/yourpage"
+                        required
+                    >
+                </div>
+
+                <div class="form-group">
+                    <label for="since_date">起始日期 *</label>
+                    <input
+                        type="date"
+                        id="since_date"
+                        name="since_date"
+                        required
+                    >
+                </div>
+
+                <button type="submit" class="btn-submit" id="batchSubmitBtn">
+                    🔍 開始抓取貼文
+                </button>
+            </form>
+
+            <div class="loading" id="loading-batch">
+                <div class="spinner"></div>
+                <p class="loading-text">正在自動滾動並抓取粉絲團貼文...</p>
+                <p class="loading-text" style="font-size: 12px; margin-top: 10px; color: #666;">
+                    🔄 系統會自動滾動頁面直到找到早於設定日期的貼文
+                </p>
+                <p class="loading-text" style="font-size: 12px; margin-top: 5px; color: #666;">
+                    ⏱️ 預計需要 2-5 分鐘（取決於貼文數量），請耐心等候
+                </p>
+                <div id="progress-info" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 5px; display: none;">
+                    <p class="loading-text" style="font-size: 11px; color: #888;">
+                        💡 提示：批次功能會持續滾動直到所有符合日期條件的貼文都被抓取
+                    </p>
+                </div>
+            </div>
+
+            <!-- 結果顯示 -->
+            <div class="results-container" id="results-container" style="display: none;">
+                <div class="results-summary" id="results-summary"></div>
+
+                <table class="posts-table" id="posts-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 20%">標題</th>
+                            <th style="width: 10%">日期</th>
+                            <th style="width: 30%">內容預覽</th>
+                            <th style="width: 10%">圖片數</th>
+                            <th style="width: 30%">圖片預覽</th>
+                        </tr>
+                    </thead>
+                    <tbody id="posts-tbody">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Tab 切換
+        function switchTab(tabName) {
+            // 更新 tab 按鈕狀態
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            // 更新 tab 內容顯示
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+        }
+
+        // 設置今天的日期為預設值
+        document.addEventListener('DOMContentLoaded', function() {
+            const today = new Date().toISOString().split('T')[0];
+            document.getElementById('publish_date').value = today;
+            document.getElementById('since_date').value = today;
+
+            // 載入中文版標籤和分類
+            loadTags();
+            loadCategories();
+            // 載入英文版標籤和分類
+            loadTagsEn();
+            loadCategoriesEn();
+        });
+
+        // 載入標籤
+        async function loadTags() {
+            try {
+                const response = await fetch('/api/tags');
+                const result = await response.json();
+
+                const container = document.getElementById('tags-container');
+
+                if (result.success && result.data.length > 0) {
+                    container.innerHTML = '';
+                    result.data.forEach(tag => {
+                        const item = document.createElement('div');
+                        item.className = 'checkbox-item';
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `tag-${tag.id}`;
+                        checkbox.value = tag.id;
+                        checkbox.name = 'tags';
+
+                        const label = document.createElement('label');
+                        label.htmlFor = `tag-${tag.id}`;
+                        label.textContent = tag.name;
+
+                        item.appendChild(checkbox);
+                        item.appendChild(label);
+                        container.appendChild(item);
+                    });
+                } else {
+                    container.innerHTML = '<div class="checkbox-loading">無可用標籤</div>';
+                }
+            } catch (error) {
+                console.error('載入標籤失敗:', error);
+                document.getElementById('tags-container').innerHTML = '<div class="checkbox-loading">載入失敗</div>';
+            }
+        }
+
+        // 載入分類
+        async function loadCategories() {
+            try {
+                const response = await fetch('/api/categories');
+                const result = await response.json();
+
+                const container = document.getElementById('categories-container');
+
+                if (result.success && result.data.length > 0) {
+                    container.innerHTML = '';
+                    result.data.forEach(cat => {
+                        const item = document.createElement('div');
+                        item.className = 'checkbox-item';
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `cat-${cat.id}`;
+                        checkbox.value = cat.id;
+                        checkbox.name = 'categories';
+
+                        const label = document.createElement('label');
+                        label.htmlFor = `cat-${cat.id}`;
+                        label.textContent = cat.name;
+
+                        item.appendChild(checkbox);
+                        item.appendChild(label);
+                        container.appendChild(item);
+                    });
+                } else {
+                    container.innerHTML = '<div class="checkbox-loading">無可用分類</div>';
+                }
+            } catch (error) {
+                console.error('載入分類失敗:', error);
+                document.getElementById('categories-container').innerHTML = '<div class="checkbox-loading">載入失敗</div>';
+            }
+        }
+
+        // 載入英文版標籤
+        async function loadTagsEn() {
+            try {
+                const response = await fetch('/api/tags-en');
+                const result = await response.json();
+
+                const container = document.getElementById('tags-container-en');
+
+                if (result.success && result.data.length > 0) {
+                    container.innerHTML = '';
+                    result.data.forEach(tag => {
+                        const item = document.createElement('div');
+                        item.className = 'checkbox-item';
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `tag-en-${tag.id}`;
+                        checkbox.value = tag.id;
+                        checkbox.name = 'tags-en';
+
+                        const label = document.createElement('label');
+                        label.htmlFor = `tag-en-${tag.id}`;
+                        label.textContent = tag.name;
+
+                        item.appendChild(checkbox);
+                        item.appendChild(label);
+                        container.appendChild(item);
+                    });
+                } else {
+                    container.innerHTML = '<div class="checkbox-loading">無可用標籤</div>';
+                }
+            } catch (error) {
+                console.error('載入英文版標籤失敗:', error);
+                document.getElementById('tags-container-en').innerHTML = '<div class="checkbox-loading">載入失敗</div>';
+            }
+        }
+
+        // 載入英文版分類
+        async function loadCategoriesEn() {
+            try {
+                const response = await fetch('/api/categories-en');
+                const result = await response.json();
+
+                const container = document.getElementById('categories-container-en');
+
+                if (result.success && result.data.length > 0) {
+                    container.innerHTML = '';
+                    result.data.forEach(cat => {
+                        const item = document.createElement('div');
+                        item.className = 'checkbox-item';
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `cat-en-${cat.id}`;
+                        checkbox.value = cat.id;
+                        checkbox.name = 'categories-en';
+
+                        const label = document.createElement('label');
+                        label.htmlFor = `cat-en-${cat.id}`;
+                        label.textContent = cat.name;
+
+                        item.appendChild(checkbox);
+                        item.appendChild(label);
+                        container.appendChild(item);
+                    });
+                } else {
+                    container.innerHTML = '<div class="checkbox-loading">無可用分類</div>';
+                }
+            } catch (error) {
+                console.error('載入英文版分類失敗:', error);
+                document.getElementById('categories-container-en').innerHTML = '<div class="checkbox-loading">載入失敗</div>';
+            }
+        }
+
+        // 顯示訊息
+        function showMessage(elementId, text, type) {
+            const messageDiv = document.getElementById(elementId);
+            messageDiv.innerHTML = text;
+            messageDiv.className = `message active ${type}`;
+            messageDiv.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // 單篇發布表單提交
+        document.getElementById('publishForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const submitBtn = document.getElementById('submitBtn');
+            const loading = document.getElementById('loading-single');
+            const messageDiv = document.getElementById('message-single');
+
+            // 隱藏之前的訊息
+            messageDiv.className = 'message';
+
+            // 獲取中文版選中的標籤
+            const selectedTags = [];
+            document.querySelectorAll('input[name="tags"]:checked').forEach(cb => {
+                selectedTags.push(parseInt(cb.value));
+            });
+
+            // 獲取中文版選中的分類
+            const selectedCategories = [];
+            document.querySelectorAll('input[name="categories"]:checked').forEach(cb => {
+                selectedCategories.push(parseInt(cb.value));
+            });
+
+            // 獲取英文版選中的標籤
+            const selectedTagsEn = [];
+            document.querySelectorAll('input[name="tags-en"]:checked').forEach(cb => {
+                selectedTagsEn.push(parseInt(cb.value));
+            });
+
+            // 獲取英文版選中的分類
+            const selectedCategoriesEn = [];
+            document.querySelectorAll('input[name="categories-en"]:checked').forEach(cb => {
+                selectedCategoriesEn.push(parseInt(cb.value));
+            });
+
+            // 獲取選中的語言
+            const selectedLanguages = [];
+            document.querySelectorAll('input[name="languages"]:checked').forEach(cb => {
+                selectedLanguages.push(cb.value);
+            });
+
+            // 驗證至少選擇一種語言
+            if (selectedLanguages.length === 0) {
+                showMessage('message-single', '請至少選擇一種發布語言', 'error');
+                return;
+            }
+
+            // 獲取表單數據
+            const formData = {
+                fb_url: document.getElementById('fb_url').value.trim(),
+                tags: selectedTags,
+                categories: selectedCategories,
+                tags_en: selectedTagsEn,
+                categories_en: selectedCategoriesEn,
+                languages: selectedLanguages,
+                publish_date: document.getElementById('publish_date').value,
+                publish_time: document.getElementById('publish_time').value
+            };
+
+            // 驗證 URL
+            if (!formData.fb_url) {
+                showMessage('message-single', '請輸入 Facebook 貼文 URL', 'error');
+                return;
+            }
+
+            if (!formData.fb_url.includes('facebook.com')) {
+                showMessage('message-single', '請輸入有效的 Facebook URL', 'error');
+                return;
+            }
+
+            // 顯示載入狀態
+            submitBtn.disabled = true;
+            loading.classList.add('active');
+
+            try {
+                const response = await fetch('/api/publish', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // 處理多語言發佈結果
+                    let postLinks = '';
+                    if (result.published_posts && result.published_posts.length > 0) {
+                        postLinks = result.published_posts.map(post => {
+                            return `📝 ${post.language_name}版: <a href="${post.post_url}" target="_blank">${post.title}</a>`;
+                        }).join('<br>');
+                    }
+
+                    const message = `
+                        <strong>✅ 發布成功！</strong><br><br>
+                        ${postLinks}<br><br>
+                        🖼️  圖片數量: ${result.image_count}
+                    `;
+                    showMessage('message-single', message, 'success');
+
+                    // 重置表單
+                    document.getElementById('fb_url').value = '';
+                } else {
+                    showMessage('message-single', `❌ 發布失敗: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showMessage('message-single', `❌ 發生錯誤: ${error.message}`, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        });
+
+        // 批次抓取表單提交
+        document.getElementById('batchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const submitBtn = document.getElementById('batchSubmitBtn');
+            const loading = document.getElementById('loading-batch');
+            const messageDiv = document.getElementById('message-batch');
+            const resultsContainer = document.getElementById('results-container');
+
+            // 隱藏之前的訊息和結果
+            messageDiv.className = 'message';
+            resultsContainer.style.display = 'none';
+
+            const formData = {
+                page_url: document.getElementById('page_url').value.trim(),
+                since_date: document.getElementById('since_date').value
+            };
+
+            // 驗證
+            if (!formData.page_url) {
+                showMessage('message-batch', '請輸入粉絲團 URL', 'error');
+                return;
+            }
+
+            if (!formData.since_date) {
+                showMessage('message-batch', '請選擇起始日期', 'error');
+                return;
+            }
+
+            // 顯示載入狀態
+            submitBtn.disabled = true;
+            loading.classList.add('active');
+
+            try {
+                const response = await fetch('/api/batch/scrape', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    showMessage('message-batch', `✅ ${result.message}`, 'success');
+                    displayPosts(result.posts);
+                } else {
+                    showMessage('message-batch', `❌ 抓取失敗: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showMessage('message-batch', `❌ 發生錯誤: ${error.message}`, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                loading.classList.remove('active');
+            }
+        });
+
+        // 顯示貼文列表
+        function displayPosts(posts) {
+            const tbody = document.getElementById('posts-tbody');
+            const resultsContainer = document.getElementById('results-container');
+            const resultsSummary = document.getElementById('results-summary');
+
+            tbody.innerHTML = '';
+
+            posts.forEach(post => {
+                const row = document.createElement('tr');
+
+                // 標題
+                const titleCell = document.createElement('td');
+                titleCell.innerHTML = `<div class="post-title">${post.title || '(無標題)'}</div>`;
+                row.appendChild(titleCell);
+
+                // 日期
+                const dateCell = document.createElement('td');
+                dateCell.innerHTML = `<div class="post-date">${post.date}</div>`;
+                row.appendChild(dateCell);
+
+                // 內容預覽
+                const contentCell = document.createElement('td');
+                contentCell.innerHTML = `<div class="post-content">${post.content}</div>`;
+                row.appendChild(contentCell);
+
+                // 圖片數量
+                const countCell = document.createElement('td');
+                countCell.innerHTML = `<span class="image-count">${post.image_count} 張</span>`;
+                row.appendChild(countCell);
+
+                // 圖片預覽
+                const imagesCell = document.createElement('td');
+                const imagesDiv = document.createElement('div');
+                imagesDiv.className = 'post-images';
+
+                post.images.forEach(imgUrl => {
+                    const img = document.createElement('img');
+                    img.src = imgUrl;
+                    img.className = 'post-image-preview';
+                    img.alt = '圖片預覽';
+                    img.onclick = () => window.open(imgUrl, '_blank');
+                    imagesDiv.appendChild(img);
+                });
+
+                imagesCell.appendChild(imagesDiv);
+                row.appendChild(imagesCell);
+
+                tbody.appendChild(row);
+            });
+
+            // 顯示摘要
+            resultsSummary.innerHTML = `📊 找到 <strong>${posts.length}</strong> 個貼文`;
+
+            // 顯示結果容器
+            resultsContainer.style.display = 'block';
+            resultsContainer.scrollIntoView({ behavior: 'smooth' });
+        }
+    </script>
+</body>
+</html>
