@@ -396,7 +396,13 @@ def scrape_facebook_post(post_url: str, download_dir: str = 'temp_fb_downloads')
 
 
 class FacebookPageScraper:
-    """Facebook 粉絲團爬蟲 - 批次抓取貼文"""
+    """Facebook 粉絲團爬蟲 - 批次抓取貼文
+    
+    需要先登入 Facebook（使用 login_and_save_cookies）取得 cookies，
+    批次抓取時載入 cookies 後即可正常瀏覽粉絲頁並提取貼文 URL。
+    """
+
+    COOKIES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'facebook_cookies.json')
 
     def __init__(self, headless: bool = True):
         self.headless = headless
@@ -404,274 +410,409 @@ class FacebookPageScraper:
         self.base_scraper = FacebookScraper(headless=headless)
 
     def _init_driver(self):
-        """初始化 Chrome WebDriver"""
-        self.base_scraper._init_driver()
-        self.driver = self.base_scraper.driver
+        """初始化 Chrome WebDriver（啟用效能日誌以攔截 GraphQL 回應）"""
+        import shutil
+
+        chrome_options = Options()
+        if self.headless:
+            chrome_options.add_argument('--headless=new')
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        chrome_options.add_argument('--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36')
+        # 啟用效能日誌以攔截 GraphQL API 回應
+        chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
+
+        system_chromedriver = shutil.which('chromedriver')
+        if not system_chromedriver:
+            raise RuntimeError("找不到 chromedriver")
+
+        print(f"使用系統 ChromeDriver: {system_chromedriver}")
+        service = Service(system_chromedriver)
+        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+
+        # 反自動化偵測
+        self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'
+        })
+
+        # 啟用 Network 監聽（用於讀取 response body）
+        self.driver.execute_cdp_cmd('Network.enable', {})
+
+        # 同步更新 base_scraper 的 driver
+        self.base_scraper.driver = self.driver
+
+    def _load_cookies(self) -> bool:
+        """從檔案載入 Facebook cookies"""
+        import json
+        if not os.path.exists(self.COOKIES_FILE):
+            print("⚠️ 找不到 Facebook cookies 檔案，請先登入")
+            return False
+        try:
+            with open(self.COOKIES_FILE, 'r') as f:
+                cookies = json.load(f)
+            
+            # 先訪問 facebook.com 才能設定 cookies
+            self.driver.get('https://www.facebook.com/')
+            time.sleep(2)
+            
+            for cookie in cookies:
+                # Selenium 不支援某些屬性
+                for key in ['sameSite', 'storeId', 'id']:
+                    cookie.pop(key, None)
+                # 確保 domain 正確
+                if 'domain' not in cookie or not cookie['domain']:
+                    cookie['domain'] = '.facebook.com'
+                try:
+                    self.driver.add_cookie(cookie)
+                except Exception:
+                    pass
+            
+            print(f"✅ 已載入 {len(cookies)} 個 cookies")
+            return True
+        except Exception as e:
+            print(f"❌ 載入 cookies 失敗: {e}")
+            return False
+
+    @classmethod
+    def login_and_save_cookies(cls) -> bool:
+        """
+        開啟非無頭瀏覽器讓使用者登入 Facebook，登入成功後儲存 cookies。
+        此方法會開啟一個 Chrome 視窗，使用者需手動登入。
+        """
+        import json
+        import shutil
+
+        print("正在開啟 Chrome 瀏覽器...")
+        print("請在瀏覽器中登入 Facebook，登入完成後系統會自動儲存 cookies。")
+
+        chrome_options = Options()
+        # 非無頭模式 - 使用者可以看到並操作瀏覽器
+        chrome_options.add_argument('--no-sandbox')
+        chrome_options.add_argument('--disable-dev-shm-usage')
+        chrome_options.add_argument('--window-size=1200,800')
+
+        system_chromedriver = shutil.which('chromedriver')
+        if not system_chromedriver:
+            print("❌ 找不到 chromedriver")
+            return False
+
+        service = Service(system_chromedriver)
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+
+        try:
+            driver.get('https://www.facebook.com/login')
+            print("⏳ 等待登入... (完成後會自動偵測)")
+            print("  偵測方式：等待 c_user cookie 出現（代表真正登入成功）")
+
+            # 等待使用者登入 — 用 cookie 偵測而非 URL 偵測
+            # 登入成功後 Facebook 會設定 c_user cookie
+            max_wait = 300  # 最多等 5 分鐘
+            logged_in = False
+            for i in range(max_wait):
+                time.sleep(1)
+                # 檢查是否已有登入 session cookie
+                browser_cookies = driver.get_cookies()
+                cookie_names = [c.get('name', '') for c in browser_cookies]
+                if 'c_user' in cookie_names:
+                    # 再等幾秒確保所有 cookies 完全設定
+                    print("  偵測到 c_user cookie，等待其餘 cookies 設定完成...")
+                    time.sleep(5)
+                    logged_in = True
+                    break
+                if i % 30 == 0 and i > 0:
+                    print(f"  仍在等待登入... ({i}秒)")
+
+            if not logged_in:
+                print("❌ 登入逾時（未偵測到 c_user cookie）")
+                return False
+
+            # 儲存 cookies
+            cookies = driver.get_cookies()
+            cookie_names = [c.get('name', '') for c in cookies]
+            print(f"  取得 cookies: {cookie_names}")
+
+            with open(cls.COOKIES_FILE, 'w') as f:
+                json.dump(cookies, f, ensure_ascii=False, indent=2)
+
+            print(f"✅ 登入成功！已儲存 {len(cookies)} 個 cookies 到 {cls.COOKIES_FILE}")
+            return True
+
+        except Exception as e:
+            print(f"❌ 登入過程出錯: {e}")
+            return False
+        finally:
+            driver.quit()
+
+    @classmethod
+    def check_login_status(cls) -> bool:
+        """檢查是否已有有效的 cookies 檔案（必須含 c_user）"""
+        import json
+        if not os.path.exists(cls.COOKIES_FILE):
+            return False
+        try:
+            with open(cls.COOKIES_FILE, 'r') as f:
+                cookies = json.load(f)
+            # 檢查是否有關鍵的登入 session cookie
+            cookie_names = [c.get('name', '') for c in cookies]
+            # c_user 是 Facebook 登入後才會出現的 cookie
+            return 'c_user' in cookie_names
+        except Exception:
+            return False
 
     def scrape_page_posts(self, page_url: str, since_date: str) -> List[Dict]:
         """
         爬取粉絲團指定日期之後的所有貼文
-        自動滾動直到所有貼文的日期都早於設定日期
 
-        Args:
-            page_url: 粉絲團 URL
-            since_date: 起始日期 (格式: YYYY-MM-DD)
-
-        Returns:
-            貼文列表，每個貼文包含：
-            {
-                'url': 貼文URL,
-                'title': 貼文標題（第一行）,
-                'content': 貼文完整內容,
-                'date': 貼文日期,
-                'images': 圖片URL列表,
-                'image_count': 圖片數量
-            }
+        策略（攔截 GraphQL API 回應）：
+        1. 啟用 Chrome Performance Logs
+        2. 載入 cookies → 訪問粉絲頁 → 持續滾動
+        3. 從 GraphQL API 回應中提取 pfbid + post_id + creation_time + message
+        4. 用 creation_time 過濾日期
+        5. 逐一訪問每個 permalink 抓取完整內容和圖片
         """
         try:
             self._init_driver()
 
-            from datetime import datetime
+            from datetime import datetime, timedelta
+            import re
+            import json as json_mod
+            import urllib.parse
             target_date = datetime.strptime(since_date, '%Y-%m-%d')
+            target_ts = int(target_date.timestamp())
 
-            print(f"正在訪問粉絲團: {page_url}")
-            print(f"目標日期: {since_date} (將抓取此日期之後的所有貼文)")
+            # 載入 cookies
+            if not self._load_cookies():
+                print("❌ 無法載入 Facebook cookies，請先使用「登入 Facebook」功能")
+                return []
+
+            # 從 URL 提取 page_id
+            parsed = urllib.parse.urlparse(page_url)
+            params = urllib.parse.parse_qs(parsed.query)
+            page_id = params.get('id', [None])[0]
+            if not page_id:
+                path = parsed.path.strip('/')
+                if path.isdigit():
+                    page_id = path
+
+            print(f"\n正在訪問粉絲團: {page_url}")
+            print(f"目標日期: {since_date}")
+            print(f"粉絲頁 ID: {page_id or '未知（將從頁面提取）'}")
             self.driver.get(page_url)
-            time.sleep(10)  # 增加等待時間確保頁面完全載入
-            
-            # 檢查是否成功載入頁面
+            time.sleep(6)
+
             page_title = self.driver.title
             print(f"頁面標題: {page_title}")
-            
-            # 嘗試處理登入提示或其他彈窗
+
+            # 如果 URL 是 slug 格式（如 /euxin.babycare），嘗試從頁面提取數字 page_id
+            if not page_id:
+                try:
+                    source_snippet = self.driver.page_source[:50000]  # 只看前 50KB
+                    # Facebook 在頁面中嵌入 "pageID":"12345" 或 "page_id":"12345" 等
+                    import re as re_mod
+                    patterns = [
+                        r'"pageID"\s*:\s*"(\d{10,})"',
+                        r'"page_id"\s*:\s*"(\d{10,})"',
+                        r'"userID"\s*:\s*"(\d{10,})"',
+                        r'"ownerID"\s*:\s*"(\d{10,})"',
+                        r'"profileID"\s*:\s*"(\d{10,})"',
+                        r'"id"\s*:\s*"(\d{10,})"[^}]*"__typename"\s*:\s*"Page"',
+                    ]
+                    for pat in patterns:
+                        m = re_mod.search(pat, source_snippet)
+                        if m:
+                            page_id = m.group(1)
+                            print(f"  \ud83d\udd0d 從頁面提取到 page_id: {page_id}")
+                            break
+                    if not page_id:
+                        # 備用：找第一個出現的 actors[0].id
+                        actor_match = re_mod.search(r'"actors"\s*:\s*\[\s*\{\s*[^}]*"id"\s*:\s*"(\d{10,})"', source_snippet)
+                        if actor_match:
+                            page_id = actor_match.group(1)
+                            print(f"  \ud83d\udd0d 從 actors 提取到 page_id: {page_id}")
+                except Exception as e:
+                    print(f"  \u26a0\ufe0f 提取 page_id 失敗: {e}")
+
+            # 檢查是否仍在登入頁
+            if 'login' in self.driver.current_url.lower():
+                print("❌ cookies 已失效，請重新登入")
+                return []
+
+            # 關閉可能的彈窗
             try:
-                # 查找並關閉可能的彈窗
-                close_buttons = self.driver.find_elements(By.XPATH, 
-                    "//div[@role='button' and contains(@aria-label, 'Close')] | //button[contains(@aria-label, 'Close')]")
-                if close_buttons:
-                    close_buttons[0].click()
-                    time.sleep(2)
-                    print("已關閉彈窗")
+                close_btns = self.driver.find_elements(By.XPATH,
+                    "//div[@aria-label='關閉' or @aria-label='Close']")
+                if close_btns:
+                    close_btns[0].click()
+                    time.sleep(1)
             except:
                 pass
 
-            detailed_posts = []
-            seen_urls = set()
+            # Step 1: 滾動頁面並從 GraphQL 回應中收集貼文資料
+            post_map = {}  # post_id -> {pfbid, post_id, creation_time, full_message, ...}
             scroll_count = 0
-            max_scrolls = 200  # 增加最大滾動次數
-            consecutive_old_posts = 0  # 連續發現過期貼文的滾動次數
-            no_new_content_count = 0  # 連續沒有新內容的次數
-            
-            print("開始自動滾動並提取貼文...")
+            max_scrolls = 100
+            no_new_count = 0
+            found_old_post = False
+            scrolls_after_old = 0  # 找到舊貼文後的額外滾動次數
+
+            print("\n開始滾動並攔截 GraphQL 回應...")
             print("=" * 60)
+
+            # Step 0: 從頁面原始碼提取 SSR 嵌入的貼文（最新 1-2 篇可能不在 GraphQL XHR 中）
+            ssr_posts = self._extract_posts_from_page_source(page_id)
+            for key, info in ssr_posts.items():
+                post_map[key] = info
+                ct = info.get('creation_time')
+                if ct and ct < target_ts:
+                    found_old_post = True
+            if ssr_posts:
+                print(f"  SSR 嵌入: 找到 {len(ssr_posts)} 個貼文")
+
+            # 先處理初始頁面載入的 GraphQL 回應（也包含貼文資料）
+            initial_posts = self._extract_posts_from_perf_logs(page_id)
+            for key, info in initial_posts.items():
+                post_map[key] = info
+                ct = info.get('creation_time')
+                if ct and ct < target_ts:
+                    found_old_post = True
+            if initial_posts:
+                print(f"  初始載入: 找到 {len(initial_posts)} 個貼文")
 
             while scroll_count < max_scrolls:
-                current_scroll_found_new = False
-                current_scroll_found_old = False
-                current_posts_in_scroll = 0
+                # 滾動
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(4)
 
-                # 查找頁面上所有的時間元素和連結
-                try:
-                    # 使用更全面的貼文選擇器，包括個人檔案頁面的結構
-                    post_selectors = [
-                        "//div[@role='article']",  # 標準貼文容器
-                        "//div[contains(@class, 'x1yztbdb')]",  # 另一種貼文容器
-                        "//div[contains(@class, 'x1n2onr6')]",  # 第三種貼文容器
-                        "//div[@data-pagelet='FeedUnit']",  # 動態消息單元
-                        "//div[contains(@class, 'story_body_container')]",  # 故事內容容器
-                        "//div[contains(@class, 'userContentWrapper')]",  # 用戶內容包裝器
-                    ]
-                    
-                    post_elements = []
-                    for selector in post_selectors:
-                        try:
-                            elements = self.driver.find_elements(By.XPATH, selector)
-                            post_elements.extend(elements)
-                        except:
-                            continue
-                    
-                    # 去除重複元素
-                    unique_elements = list(set(post_elements))
-                    post_elements = unique_elements
+                # 從 performance logs 提取 GraphQL 回應
+                new_posts = self._extract_posts_from_perf_logs(page_id)
 
-                    print(f"\n滾動 #{scroll_count + 1} - 檢查 {len(post_elements)} 個貼文元素")
-                    
-                    # 如果找不到貼文元素，嘗試其他方法
-                    if len(post_elements) == 0:
-                        print("    ⚠️ 使用標準選擇器找不到貼文，嘗試備用方法...")
-                        # 查找包含連結的所有div
-                        all_divs = self.driver.find_elements(By.XPATH, "//div[.//a[contains(@href, '/posts/') or contains(@href, '/permalink.php') or contains(@href, '/story.php')]]")
-                        post_elements = all_divs[:50]  # 限制數量避免過多
-                        print(f"    🔄 備用方法找到 {len(post_elements)} 個可能的貼文元素")
+                new_found = 0
+                for key, info in new_posts.items():
+                    if key in post_map:
+                        continue
+                    post_map[key] = info
+                    new_found += 1
 
-                    for post_elem in post_elements:
-                        try:
-                            # 更全面的連結搜尋策略
-                            link_selectors = [
-                                ".//a[contains(@href, '/posts/')]",
-                                ".//a[contains(@href, '/permalink.php')]", 
-                                ".//a[contains(@href, '/story.php')]",
-                                ".//a[contains(@href, '/photo.php')]",  # 照片貼文
-                                ".//a[contains(@href, 'fbid=')]",  # 另一種照片格式
-                                ".//a[@role='link' and @href]",  # 通用連結
-                            ]
-                            
-                            links = []
-                            for link_selector in link_selectors:
-                                try:
-                                    found_links = post_elem.find_elements(By.XPATH, link_selector)
-                                    links.extend(found_links)
-                                    if links:  # 如果找到連結就停止
-                                        break
-                                except:
-                                    continue
-
-                            if not links:
-                                continue
-
-                            post_url = links[0].get_attribute('href')
-                            if not post_url:
-                                continue
-
-                            # 清理和標準化URL
-                            original_url = post_url
-                            if '?' in post_url:
-                                post_url = post_url.split('?')[0]
-                            
-                            # 處理不同的URL格式
-                            if '/photo.php' in post_url or 'fbid=' in original_url:
-                                # 對於照片連結，保留原始URL
-                                post_url = original_url
-
-                            # 檢查是否已處理過
-                            if post_url in seen_urls:
-                                continue
-
-                            print(f"    🔍 檢查連結: {post_url[:80]}...")
-
-                            # 嘗試在當前元素內查找時間
-                            time_elems = post_elem.find_elements(By.TAG_NAME, 'time')
-                            post_date_str = None
-
-                            if time_elems:
-                                datetime_attr = time_elems[0].get_attribute('datetime')
-                                if datetime_attr:
-                                    try:
-                                        # 處理 ISO 格式的時間
-                                        dt = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00'))
-                                        post_date_str = dt.strftime('%Y-%m-%d')
-
-                                        # 檢查日期是否早於目標日期
-                                        post_datetime = datetime.strptime(post_date_str, '%Y-%m-%d')
-                                        if post_datetime < target_date:
-                                            print(f"    ⏰ 發現過期貼文: {post_date_str} < {since_date}")
-                                            current_scroll_found_old = True
-                                            seen_urls.add(post_url)  # 標記為已見但不處理
-                                            continue
-                                    except Exception as e:
-                                        print(f"    ⚠️ 解析日期失敗: {e}")
-
-                            # 標記為已見過
-                            seen_urls.add(post_url)
-                            current_posts_in_scroll += 1
-
-                            print(f"    ✅ 發現符合條件的貼文: {post_url[:60]}... (日期: {post_date_str or '未知'})")
-
-                            # 立即提取詳細資訊
-                            detailed_post = self._extract_post_details(post_url, target_date, since_date)
-                            if detailed_post:
-                                detailed_posts.append(detailed_post)
-                                current_scroll_found_new = True
-
-                        except Exception as e:
-                            continue
-
-                    print(f"    📊 本次滾動統計: 新貼文 {current_posts_in_scroll} 個")
-
-                except Exception as e:
-                    print(f"    ❌ 提取貼文時出錯: {e}")
-
-                # 判斷停止條件
-                if current_scroll_found_old and not current_scroll_found_new:
-                    consecutive_old_posts += 1
-                    print(f"    🔄 連續第 {consecutive_old_posts} 次滾動只發現過期貼文")
-                else:
-                    consecutive_old_posts = 0
-
-                # 如果連續 5 次滾動都只發現過期貼文，很可能已經到達目標日期之前
-                if consecutive_old_posts >= 5:
-                    print(f"\n🛑 已連續 {consecutive_old_posts} 次滾動只發現過期貼文，停止抓取")
-                    break
-
-                # 滾動頁面
-                print(f"    📜 向下滾動...")
-                last_height = self.driver.execute_script("return document.body.scrollHeight")
-                
-                # 使用更積極的滾動策略
-                try:
-                    if scroll_count % 5 == 0:
-                        # 每5次使用平滑滾動
-                        self.driver.execute_script("window.scrollTo({top: document.body.scrollHeight, behavior: 'smooth'});")
-                    elif scroll_count % 3 == 0:
-                        # 每3次滾動到頁面的不同位置
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.8);")
-                        time.sleep(1)
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    else:
-                        # 其他時候使用快速滾動
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    
-                    # 嘗試觸發懶載入
-                    self.driver.execute_script("""
-                        // 觸發scroll事件
-                        window.dispatchEvent(new Event('scroll'));
-                        // 觸發resize事件
-                        window.dispatchEvent(new Event('resize'));
-                    """)
-                    
-                except Exception as e:
-                    print(f"    ⚠️ 滾動失敗: {e}")
-
-                time.sleep(8)  # 增加等待時間讓內容充分載入
-
-                # 檢查是否有新內容載入
-                new_height = self.driver.execute_script("return document.body.scrollHeight")
-                if new_height == last_height:
-                    no_new_content_count += 1
-                    print(f"    ⏸️ 第 {no_new_content_count} 次未發現新內容")
-                    
-                    # 嘗試觸發更多內容載入
-                    if no_new_content_count <= 3:
-                        print(f"    🔄 嘗試觸發更多內容載入...")
-                        # 向上滾動一點再向下滾動
-                        self.driver.execute_script("window.scrollBy(0, -200);")
-                        time.sleep(2)
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                        time.sleep(4)
-                        
-                        # 再次檢查
-                        final_height = self.driver.execute_script("return document.body.scrollHeight")
-                        if final_height and final_height > new_height:
-                            no_new_content_count = 0  # 重置計數
-                            print(f"    ✅ 成功載入更多內容")
-                    
-                    # 如果連續多次沒有新內容，停止
-                    if no_new_content_count >= 4:
-                        print(f"    🏁 頁面已到底部，沒有更多內容")
-                        break
-                else:
-                    no_new_content_count = 0  # 重置計數
+                    # 檢查日期是否早於目標
+                    ct = info.get('creation_time')
+                    if ct and ct < target_ts:
+                        found_old_post = True
 
                 scroll_count += 1
-                
-                # 每 10 次滾動顯示進度
-                if scroll_count % 10 == 0:
-                    print(f"\n📈 進度報告 - 已滾動 {scroll_count} 次，已抓取 {len(detailed_posts)} 個貼文")
+                if new_found > 0:
+                    no_new_count = 0
+                    print(f"  滾動 #{scroll_count}: 新增 {new_found} 個，累計 {len(post_map)} 個")
+                else:
+                    no_new_count += 1
 
-            print("=" * 60)
-            print(f"🎉 抓取完成！總共成功提取 {len(detailed_posts)} 個符合條件的貼文")
-            print(f"📊 滾動次數: {scroll_count}")
-            print(f"📅 目標日期: {since_date}")
+                if no_new_count >= 5:
+                    print(f"  連續 {no_new_count} 次無新內容，停止滾動")
+                    break
+
+                # 如果已找到早於目標日期的貼文，再多滾動 3 次就停
+                if found_old_post:
+                    scrolls_after_old += 1
+                    if scrolls_after_old >= 3:
+                        print(f"  已找到早於 {since_date} 的貼文，額外滾動 {scrolls_after_old} 次後停止")
+                        break
+
+            # 過濾出日期範圍內的貼文
+            filtered_posts = []
+            no_date_posts = []
+            for key, info in post_map.items():
+                ct = info.get('creation_time')
+                if ct:
+                    if ct >= target_ts:
+                        filtered_posts.append(info)
+                    else:
+                        post_date = datetime.fromtimestamp(ct).strftime('%Y-%m-%d')
+                        print(f"  ⏰ 跳過早於 {since_date} 的貼文: {post_date} - {info.get('message_preview', '')[:30]}")
+                else:
+                    # 沒有日期的貼文也納入（可能是最新的貼文，creation_time 路徑變了）
+                    no_date_posts.append(info)
+                    print(f"  ⚠️ 無日期貼文納入結果: post_id={info.get('post_id', '?')} - {info.get('message_preview', '')[:40]}")
+
+            # 無日期的貼文也加入過濾結果
+            filtered_posts.extend(no_date_posts)
+
+            # 依日期排序（新到舊，無日期的放最前）
+            filtered_posts.sort(key=lambda x: x.get('creation_time', 9999999999), reverse=True)
+
+            print(f"\n{'='*60}")
+            print(f"🔍 共找到 {len(post_map)} 個粉絲頁貼文（SSR: {len(ssr_posts)}, GraphQL: {len(post_map) - len(ssr_posts)}），日期範圍內 {len(filtered_posts)} 個（含 {len(no_date_posts)} 個無日期）")
+            print(f"{'='*60}")
+
+            if not filtered_posts:
+                # 計算最新貼文日期，供前端顯示更友善的錯誤訊息
+                newest_date = None
+                for info in post_map.values():
+                    ct = info.get('creation_time')
+                    if ct:
+                        if newest_date is None or ct > newest_date:
+                            newest_date = ct
+                if newest_date:
+                    newest_date_str = datetime.fromtimestamp(newest_date).strftime('%Y-%m-%d')
+                    print(f"ℹ️ 粉絲頁最新貼文日期: {newest_date_str}，但您設定的起始日期為 {since_date}")
+                # 回傳空 list 但附帶 metadata（透過 instance attribute）
+                self._last_scrape_meta = {
+                    'found_total': len(post_map),
+                    'newest_date': datetime.fromtimestamp(newest_date).strftime('%Y-%m-%d') if newest_date else None,
+                    'since_date': since_date,
+                }
+                return []
+
+            # Step 2: 處理每篇貼文
+            # 內容直接使用 GraphQL 的 message，僅訪問 URL 來抓取完整圖片
+            detailed_posts = []
+            for i, info in enumerate(filtered_posts):
+                pfbid = info['pfbid']
+                post_id = info.get('post_id', '')
+                ct = info.get('creation_time')
+                post_date = datetime.fromtimestamp(ct).strftime('%Y-%m-%d') if ct else None
+                content = info.get('full_message', '')
+                graphql_images = info.get('image_urls', [])
+
+                # 構建 permalink URL
+                if page_id:
+                    post_url = f"https://www.facebook.com/permalink.php?story_fbid={pfbid}&id={page_id}"
+                else:
+                    post_url = f"https://www.facebook.com/permalink.php?story_fbid={pfbid}"
+
+                print(f"\n[{i+1}/{len(filtered_posts)}] 處理: post_id={post_id}")
+                if post_date:
+                    print(f"  📅 日期: {post_date}")
+                print(f"  📝 GraphQL 內容: {content[:50]}... ({len(content)} 字)")
+                print(f"  🖼️ GraphQL 圖片: {len(graphql_images)} 張")
+
+                if not content or len(content.strip()) < 5:
+                    print(f"  ⚠️ GraphQL 無內容，跳過")
+                    continue
+
+                # 使用 GraphQL 提供的圖片（已確認為該貼文的圖片）
+                # 註：不再訪問頁面抓圖，因為 _extract_image_urls() 會抓到整個頁面的所有圖片（含推薦貼文等不相關的）
+                image_urls = graphql_images
+                print(f"  🖼️ 使用 GraphQL 圖片: {len(image_urls)} 張")
+
+                # 標題：取內容第一行
+                lines = [l.strip() for l in content.split('\n') if l.strip()]
+                title = lines[0][:80] if lines else "無標題"
+
+                detailed_posts.append({
+                    'url': post_url,
+                    'title': title,
+                    'content': content,
+                    'date': post_date or 'Unknown',
+                    'images': image_urls,
+                    'image_count': len(image_urls)
+                })
+                print(f"  ✅ {title[:40]}... ({len(content)} 字, {len(image_urls)} 張圖)")
+
+            print(f"\n{'='*60}")
+            print(f"🎉 完成！成功 {len(detailed_posts)}/{len(filtered_posts)} 篇")
+            print(f"{'='*60}")
+
             return detailed_posts
 
         except Exception as e:
@@ -680,317 +821,446 @@ class FacebookPageScraper:
             traceback.print_exc()
             return []
 
-    def _extract_post_details(self, post_url: str, target_date, since_date: str) -> Optional[Dict]:
+    def _extract_posts_from_page_source(self, page_id: Optional[str] = None) -> Dict:
         """
-        提取單個貼文的詳細資訊
+        從頁面 HTML 原始碼中提取 SSR（伺服器端渲染）嵌入的貼文資料。
+        Facebook SPA 會將最新 1-2 篇貼文直接渲染在 HTML 中（不透過 GraphQL XHR），
+        因此 Performance Logs 攔截不到。此方法從 page_source 的 JSON 片段中提取這些貼文。
         
-        Args:
-            post_url: 貼文URL
-            target_date: 目標日期的 datetime 物件
-            since_date: 起始日期字串
-            
         Returns:
-            貼文詳細資訊字典，如果不符合條件則返回 None
+            {post_id: {pfbid, post_id, creation_time, full_message, image_urls}}
         """
+        import json as json_mod
+        import re
+
+        posts = {}
         try:
-            from datetime import datetime
+            source = self.driver.page_source
+            if not source or '"post_id"' not in source:
+                return posts
 
-            print(f"      🔍 正在提取貼文詳情: {post_url[:70]}...")
-            self.driver.get(post_url)
-            time.sleep(4)  # 增加等待時間確保頁面載入完成
+            print(f"  📄 頁面原始碼大小: {len(source):,} bytes，嘗試提取 SSR 嵌入貼文...")
 
-            # 點擊"查看更多"按鈕以獲取完整內容
-            try:
-                see_more_buttons = self.driver.find_elements(By.XPATH, 
-                    "//div[contains(text(), '查看更多') or contains(text(), 'See more') or contains(text(), '更多')]")
-                if see_more_buttons:
-                    see_more_buttons[0].click()
-                    time.sleep(2)
-                    print(f"      📖 已展開完整內容")
-            except:
-                pass
+            # 策略: 找出 HTML 中所有包含 "post_id" 的 JSON 物件
+            # Facebook 把資料放在 <script> 標籤或 data-sjs 屬性中
+            # 方法1: 從 <script ...>...</script> 中提取
+            script_pattern = re.compile(r'<script[^>]*>(.*?)</script>', re.DOTALL)
+            json_candidates = []
 
-            # 提取貼文內容
-            content = self._extract_post_content()
-            if not content or len(content.strip()) < 10:
-                print(f"      ⚠️ 跳過：內容太短或無法提取內容")
-                return None
-                
-            # 檢查是否是登入頁面或錯誤頁面
-            login_indicators = ['忘記帳號', '建立新帳號', '登入', 'Log in', 'Sign up', 'Create account', 
-                              'Forgotten password', '密碼', 'Password', 'Email', '電子郵件']
-            if any(indicator in content for indicator in login_indicators):
-                print(f"      ⚠️ 跳過：偵測到登入頁面或錯誤頁面")
-                return None
+            for m in script_pattern.finditer(source):
+                script_content = m.group(1).strip()
+                if '"post_id"' not in script_content:
+                    continue
+                # 有些 script 內容是 JSON，有些是 JS 賦值
+                # 嘗試直接解析，或提取 JSON 部分
+                # 常見模式: require("ScheduledServerJS").handle({"require":[...]})
+                # 或 __d("...", ["require"], function(...) {}, ...)
+                for line in script_content.split('\n'):
+                    line = line.strip()
+                    if '"post_id"' not in line:
+                        continue
+                    # 嘗試找到最外層的 JSON 物件
+                    json_candidates.append(line)
 
-            # 提取貼文日期（更準確的日期提取）
-            post_date = self._extract_post_date()
+            # 方法2: 從 data-sjs 屬性提取（某些 Facebook 頁面用此方式）
+            sjs_pattern = re.compile(r'data-sjs="([^"]*)"')
+            for m in sjs_pattern.finditer(source):
+                raw = m.group(1)
+                if '"post_id"' in raw or 'post_id' in raw:
+                    # HTML entity decode
+                    import html
+                    decoded = html.unescape(raw)
+                    json_candidates.append(decoded)
 
-            # 雙重檢查日期 - 確保貼文不早於目標日期
-            if post_date:
+            # 方法3: 尋找大型 JSON 物件（通常以 {"require": 或 {"__bbox": 開頭）
+            # 這些出現在 script type="application/json" 標籤中
+            json_script_pattern = re.compile(
+                r'<script[^>]*type="application/json"[^>]*data-sjs[^>]*>(.*?)</script>', re.DOTALL)
+            for m in json_script_pattern.finditer(source):
+                content = m.group(1).strip()
+                if '"post_id"' in content:
+                    json_candidates.append(content)
+
+            # 嘗試從每個候選 JSON 中解析貼文
+            for raw_json in json_candidates:
+                # 嘗試多種方式解析 JSON
+                parsed_objects = []
+
+                # 直接解析
                 try:
-                    post_datetime = datetime.strptime(post_date, '%Y-%m-%d')
-                    if post_datetime < target_date:
-                        print(f"      ⏰ 跳過：貼文日期 {post_date} 早於設定日期 {since_date}")
-                        return None
+                    obj = json_mod.loads(raw_json)
+                    parsed_objects.append(obj)
+                except:
+                    pass
+
+                # 嘗試找到 JSON 物件的起始位置
+                if not parsed_objects:
+                    for start_char in ['{', '[']:
+                        idx = raw_json.find(start_char)
+                        if idx >= 0:
+                            try:
+                                obj = json_mod.loads(raw_json[idx:])
+                                parsed_objects.append(obj)
+                                break
+                            except:
+                                # 可能尾部有多餘字元，嘗試找配對的括號
+                                pass
+
+                # 嘗試用正則提取所有 JSON 物件
+                if not parsed_objects:
+                    # 找所有 { 開頭的物件，嘗試逐一解析
+                    brace_positions = [i for i, c in enumerate(raw_json) if c == '{']
+                    for pos in brace_positions[:50]:  # 限制嘗試次數
+                        depth = 0
+                        end = pos
+                        for j in range(pos, min(pos + 500000, len(raw_json))):
+                            if raw_json[j] == '{':
+                                depth += 1
+                            elif raw_json[j] == '}':
+                                depth -= 1
+                                if depth == 0:
+                                    end = j + 1
+                                    break
+                        if end > pos:
+                            snippet = raw_json[pos:end]
+                            if '"post_id"' in snippet and len(snippet) > 200:
+                                try:
+                                    obj = json_mod.loads(snippet)
+                                    parsed_objects.append(obj)
+                                except:
+                                    pass
+
+                for obj in parsed_objects:
+                    story_nodes = []
+                    self._find_story_nodes(obj, story_nodes)
+                    for sn in story_nodes:
+                        post_info = self._parse_story_node(sn, page_id)
+                        if post_info:
+                            key = post_info['post_id']
+                            if key not in posts:
+                                posts[key] = post_info
+
+            if posts:
+                print(f"  ✅ 從頁面原始碼提取到 {len(posts)} 篇 SSR 嵌入貼文")
+                for pid, info in posts.items():
+                    ct = info.get('creation_time')
+                    if ct:
+                        from datetime import datetime
+                        dt = datetime.fromtimestamp(ct).strftime('%Y-%m-%d %H:%M')
+                        print(f"     - post_id={pid}, 日期={dt}, 內容={info.get('message_preview', '')[:40]}")
                     else:
-                        print(f"      ✅ 日期檢查通過：{post_date}")
-                except Exception as e:
-                    print(f"      ⚠️ 日期解析警告: {e}")
-
-            # 提取圖片
-            image_urls = self._extract_images()
-
-            # 提取標題（使用第一行內容，限制長度）
-            lines = [line.strip() for line in content.split('\n') if line.strip()]
-            title = ""
-            if lines:
-                title = lines[0][:80]  # 限制標題長度
-                if len(lines[0]) > 80:
-                    title += "..."
-
-            # 建立貼文資料
-            detailed_post = {
-                'url': post_url,
-                'title': title if title else "無標題",
-                'content': content,
-                'date': post_date or 'Unknown',
-                'images': image_urls,
-                'image_count': len(image_urls)
-            }
-
-            print(f"      🎉 提取成功 - 標題: {title[:40]}{'...' if len(title) > 40 else ''}")
-            print(f"      📊 統計: {len(image_urls)} 張圖片, {len(content)} 字")
-            return detailed_post
+                        print(f"     - post_id={pid}, 日期=未知, 內容={info.get('message_preview', '')[:40]}")
+            else:
+                print(f"  ℹ️ 頁面原始碼中未找到可解析的 SSR 嵌入貼文")
 
         except Exception as e:
-            print(f"      ❌ 提取失敗: {e}")
-            return None
+            print(f"  ⚠️ 提取 SSR 嵌入貼文時出錯: {e}")
+            import traceback
+            traceback.print_exc()
 
-    def _extract_post_content(self) -> str:
-        """
-        提取貼文內容 - 使用多種策略確保準確提取
-        """
+        return posts
+
+    def _drain_perf_logs(self):
+        """清空已有的 performance logs"""
         try:
-            content = ""
-            
-            # 等待頁面載入
-            time.sleep(3)
-            
-            print(f"      📄 開始提取內容，當前URL: {self.driver.current_url[:60]}...")
-            
-            # 首先嘗試點擊"查看更多"以展開內容
+            self.driver.get_log('performance')
+        except:
+            pass
+
+    def _extract_posts_from_perf_logs(self, page_id: Optional[str] = None) -> Dict:
+        """
+        從 Chrome Performance Logs 中提取 GraphQL 回應的貼文資料
+        正確解析 JSON 結構，只提取屬於目標粉絲頁的貼文
+
+        Returns:
+            {post_id: {pfbid, post_id, creation_time, full_message, image_urls}}
+        """
+        import json as json_mod
+        import re
+        posts = {}
+
+        try:
+            logs = self.driver.get_log('performance')
+        except:
+            return posts
+
+        graphql_request_ids = []
+        for entry in logs:
             try:
-                see_more_selectors = [
-                    "//div[contains(text(), '查看更多')]",
-                    "//div[contains(text(), 'See more')]", 
-                    "//div[contains(text(), '更多')]",
-                    "//span[contains(text(), '查看更多')]",
-                    "//span[contains(text(), 'See more')]",
-                    "//div[@role='button' and contains(text(), '更多')]"
-                ]
-                
-                for selector in see_more_selectors:
+                log_data = json_mod.loads(entry['message'])
+                msg = log_data.get('message', {})
+                method = msg.get('method', '')
+
+                if method == 'Network.responseReceived':
+                    url = msg.get('params', {}).get('response', {}).get('url', '')
+                    if 'graphql' in url.lower():
+                        req_id = msg.get('params', {}).get('requestId', '')
+                        graphql_request_ids.append(req_id)
+            except:
+                continue
+
+        for req_id in graphql_request_ids:
+            try:
+                body = self.driver.execute_cdp_cmd('Network.getResponseBody', {'requestId': req_id})
+                body_text = body.get('body', '')
+
+                # 跳過不含 post_id 的回應
+                if '"post_id"' not in body_text:
+                    continue
+
+                # Facebook 回應可能是多行 JSON（各行獨立）
+                for line in body_text.split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
                     try:
-                        see_more_buttons = self.driver.find_elements(By.XPATH, selector)
-                        if see_more_buttons:
-                            see_more_buttons[0].click()
-                            time.sleep(2)
-                            print(f"      📖 已點擊展開內容")
-                            break
+                        data = json_mod.loads(line)
                     except:
                         continue
+
+                    # 從 JSON 中提取 story 節點
+                    story_nodes = []
+                    self._find_story_nodes(data, story_nodes)
+
+                    for node in story_nodes:
+                        post_info = self._parse_story_node(node, page_id)
+                        if post_info:
+                            key = post_info['post_id']
+                            if key not in posts:
+                                posts[key] = post_info
+
+            except Exception:
+                continue
+
+        return posts
+
+    def _find_story_nodes(self, obj, results, depth=0):
+        """
+        遞歸遍歷 JSON，找出所有含 post_id 的 story 節點
+
+        Facebook GraphQL 回應有兩種格式：
+        A) data.node.timeline_list_feed_units.edges[].node（含多篇貼文）
+        B) data.node（單篇貼文，每行一個 JSON）
+        """
+        if depth > 20 or not isinstance(obj, (dict, list)):
+            return
+
+        if isinstance(obj, dict):
+            # 如果這個 dict 有 post_id 且有 comet_sections，就是一個 story 節點
+            if 'post_id' in obj and 'comet_sections' in obj:
+                results.append(obj)
+                return  # 不再往下找（避免重複）
+
+            # 特別處理 timeline_list_feed_units.edges
+            edges = None
+            tl = obj.get('timeline_list_feed_units')
+            if isinstance(tl, dict):
+                edges = tl.get('edges')
+            if isinstance(edges, list):
+                for edge in edges:
+                    if isinstance(edge, dict):
+                        node = edge.get('node')
+                        if isinstance(node, dict) and 'post_id' in node:
+                            results.append(node)
+                return
+
+            # 否則繼續往下搜尋
+            for v in obj.values():
+                self._find_story_nodes(v, results, depth + 1)
+
+        elif isinstance(obj, list):
+            for item in obj:
+                self._find_story_nodes(item, results, depth + 1)
+
+    def _parse_story_node(self, node: dict, page_id: Optional[str] = None) -> Optional[Dict]:
+        """
+        從一個 story 節點中提取貼文資料
+
+        路徑：
+        - post_id: node.post_id
+        - message: node.comet_sections.content.story.message.text
+        - creation_time: node.comet_sections.context_layout.story.comet_sections.metadata[0].story.creation_time
+        - actors: node.comet_sections.content.story.actors[0].id
+        - pfbid: regex from serialized node
+        - images: node.attachments[0].styles.attachment.all_subattachments.nodes[i].media.image.uri
+        """
+        import re
+
+        post_id = str(node.get('post_id', ''))
+        if not post_id:
+            return None
+
+        comet = node.get('comet_sections', {})
+
+        # ---- 提取 message ----
+        message = ''
+        try:
+            content_story = comet.get('content', {}).get('story', {})
+            msg_obj = content_story.get('message')
+            if isinstance(msg_obj, dict):
+                message = msg_obj.get('text', '')
+            # 備用路徑: message_container
+            if not message:
+                msg_container = content_story.get('comet_sections', {}).get(
+                    'message_container', {}).get('story', {}).get('message')
+                if isinstance(msg_container, dict):
+                    message = msg_container.get('text', '')
+        except:
+            pass
+
+        # ---- 提取 creation_time ----
+        creation_time = None
+        try:
+            ctx = comet.get('context_layout', {}).get('story', {}).get('comet_sections', {})
+            metadata = ctx.get('metadata', [])
+            if isinstance(metadata, list) and metadata:
+                creation_time = metadata[0].get('story', {}).get('creation_time')
+                if creation_time:
+                    creation_time = int(creation_time)
+        except:
+            pass
+
+        # 備用路徑1: comet_sections.context_layout.story.comet_sections.timestamp
+        if not creation_time:
+            try:
+                ctx = comet.get('context_layout', {}).get('story', {}).get('comet_sections', {})
+                ts_obj = ctx.get('timestamp', {})
+                if isinstance(ts_obj, dict):
+                    ct_val = ts_obj.get('story', {}).get('creation_time')
+                    if ct_val:
+                        creation_time = int(ct_val)
             except:
                 pass
-            
-            # 策略1: 使用特定的文本容器類別
-            content_selectors = [
-                # Facebook 新版介面的文本選擇器
-                "//div[contains(@class, 'xdj266r')]//span",  
-                "//div[contains(@class, 'x1iorvi4')]//span", 
-                "//div[contains(@class, 'x1y1aw1k')]//span",
-                "//div[contains(@class, 'x126k92a')]//span",
-                
-                # 舊版和備用選擇器
-                "//div[@data-ad-preview='message']//span",   
-                "//div[@data-testid='post_message']//span",
-                "//div[contains(@class, 'userContent')]//span",
-                "//div[contains(@class, '_5pbx')]//span",
-                
-                # 更廣泛的搜尋
-                "//div[contains(@dir, 'auto')]//span",
-                "//p//span",
-                "//div//span[string-length(text()) > 10]"
-            ]
-            
-            for selector in content_selectors:
-                try:
-                    text_elements = self.driver.find_elements(By.XPATH, selector)
-                    temp_content = ""
-                    
-                    for element in text_elements:
-                        try:
-                            text = element.text.strip()
-                            # 過濾掉太短或明顯不是內容的文字
-                            if text and len(text) > 3 and not text.isdigit():
-                                # 排除 UI 元素
-                                ui_elements = ['讚', '留言', '分享', 'Like', 'Comment', 'Share', 
-                                             '更多', 'More', '查看更多', 'See more', '回覆', 'Reply']
-                                if not any(ui in text for ui in ui_elements):
-                                    # 避免重複內容
-                                    if text not in temp_content:
-                                        temp_content += text + "\n"
-                        except:
-                            continue
-                    
-                    if temp_content and len(temp_content.strip()) > len(content):
-                        content = temp_content.strip()
-                        print(f"      ✅ 使用選擇器成功提取: {len(content)} 字")
-                        if len(content) > 50:  # 如果找到足夠的內容就停止
-                            break
-                        
-                except Exception as e:
-                    continue
-                    
-            # 策略2: 如果上面的方法沒有找到足夠的內容，嘗試更廣泛的搜尋
-            if len(content) < 30:
-                print(f"      🔄 內容不足，嘗試廣泛搜尋...")
-                try:
-                    # 查找所有可能包含文本的元素
-                    broad_selectors = [
-                        "//div[contains(@dir, 'auto')]",
-                        "//div[contains(@class, 'text')]",
-                        "//p[string-length(text()) > 15]",
-                        "//div[string-length(text()) > 20 and string-length(text()) < 2000]"
-                    ]
-                    
-                    for selector in broad_selectors:
-                        elements = self.driver.find_elements(By.XPATH, selector)
-                        for div in elements:
-                            try:
-                                text = div.text.strip()
-                                if text and len(text) > 20 and len(text) < 5000:
-                                    # 檢查是否看起來像貼文內容
-                                    content_indicators = ['。', '！', '？', '.', '!', '?', '，', ',']
-                                    if any(char in text for char in content_indicators):
-                                        # 排除明顯的導航或UI文字
-                                        exclude_phrases = ['登入', 'Log in', 'Sign up', '註冊', 'Facebook', 
-                                                          'Cookie', '隱私', 'Privacy', '條款', 'Terms']
-                                        if not any(phrase in text for phrase in exclude_phrases):
-                                            if len(text) > len(content):
-                                                content = text
-                                                print(f"      ✅ 廣泛搜尋找到內容: {len(content)} 字")
-                            except:
-                                continue
-                        
-                        if len(content) > 50:
-                            break
-                            
-                except Exception as e:
-                    print(f"      ⚠️ 廣泛搜尋失敗: {e}")
 
-            # 策略3: 最後嘗試獲取頁面的主要文本內容
-            if len(content) < 20:
-                try:
-                    print(f"      🔍 嘗試獲取頁面主要內容...")
-                    # 獲取頁面主體中的所有文本，然後過濾
-                    body_text = self.driver.find_element(By.TAG_NAME, "body").text
-                    lines = body_text.split('\n')
-                    
-                    # 查找看起來像貼文內容的行
-                    for line in lines:
-                        line = line.strip()
-                        if (len(line) > 30 and len(line) < 1000 and 
-                            any(char in line for char in ['。', '.', '！', '!', '？', '?'])):
-                            # 排除UI元素和導航文字
-                            ui_words = ['讚', '留言', '分享', 'Like', 'Comment', 'Share', 'Facebook', 
-                                       '登入', 'Log in', '首頁', 'Home', '搜尋', 'Search']
-                            if not any(word in line for word in ui_words):
-                                if len(line) > len(content):
-                                    content = line
-                                    print(f"      ✅ 頁面掃描找到內容: {len(content)} 字")
-                except Exception as e:
-                    print(f"      ⚠️ 頁面掃描失敗: {e}")
+        # 備用路徑2: 直接從 node 中搜尋 creation_time
+        if not creation_time:
+            try:
+                ct_val = self._find_creation_time(node)
+                if ct_val:
+                    creation_time = int(ct_val)
+            except:
+                pass
 
-            # 清理內容
-            if content:
-                # 移除多餘的空行和空白
-                lines = [line.strip() for line in content.split('\n') if line.strip()]
-                content = '\n\n'.join(lines)
-                
-                # 移除明顯的 UI 元素文字
-                ui_texts = ['讚', '留言', '分享', '更多', '查看更多', 'See more', 'Like', 'Comment', 'Share']
-                for ui_text in ui_texts:
-                    content = content.replace(ui_text, '')
-                
-                content = content.strip()
-
-            print(f"      � 最終內容提取結果: {len(content)} 字")
-            if content:
-                print(f"      📝 內容預覽: {content[:100]}...")
-            
-            return content
-
-        except Exception as e:
-            print(f"      ❌ 提取貼文內容失敗: {e}")
-            return ""
-
-    def _extract_post_date(self) -> str:
-        """提取貼文日期"""
+        # ---- 提取 owner/actors ----
+        owner_id = None
         try:
-            # 查找時間元素
-            time_elements = self.driver.find_elements(By.TAG_NAME, 'time')
-            if time_elements:
-                # 優先使用 datetime 屬性
-                datetime_attr = time_elements[0].get_attribute('datetime')
-                if datetime_attr:
-                    # 轉換 ISO 格式到 YYYY-MM-DD
-                    from datetime import datetime
-                    dt = datetime.fromisoformat(datetime_attr.replace('Z', '+00:00'))
-                    return dt.strftime('%Y-%m-%d')
+            content_story = comet.get('content', {}).get('story', {})
+            actors = content_story.get('actors', [])
+            if isinstance(actors, list) and actors:
+                owner_id = str(actors[0].get('id', ''))
+        except:
+            pass
+        # 備用: context_layout.actor_photo
+        if not owner_id:
+            try:
+                ctx = comet.get('context_layout', {}).get('story', {}).get('comet_sections', {})
+                ap_actors = ctx.get('actor_photo', {}).get('story', {}).get('actors', [])
+                if isinstance(ap_actors, list) and ap_actors:
+                    owner_id = str(ap_actors[0].get('id', ''))
+            except:
+                pass
 
-                # 或使用顯示的文本
-                date_text = time_elements[0].text
-                if date_text:
-                    return date_text
-
-            return None
-        except Exception as e:
-            print(f"提取日期失敗: {e}")
+        # ---- 過濾: 只保留屬於目標粉絲頁的貼文 ----
+        if page_id and owner_id and owner_id != page_id:
             return None
 
-    def _extract_images(self) -> List[str]:
-        """提取圖片URL"""
+        # ---- 提取 pfbid ----
+        pfbid = ''
         try:
-            image_urls = []
-            seen_urls = set()
+            node_str = str(node)  # 比 json.dumps 快
+            pfbids = re.findall(r'pfbid\w{20,}', node_str)
+            if pfbids:
+                pfbid = pfbids[0]
+        except:
+            pass
 
-            img_elements = self.driver.find_elements(By.TAG_NAME, 'img')
+        # ---- 提取圖片 URL ----
+        image_urls = []
+        try:
+            # 優先從 node.attachments 提取
+            atts = node.get('attachments', [])
+            if not atts:
+                # 備用: content.story.attachments
+                atts = comet.get('content', {}).get('story', {}).get('attachments', [])
 
-            for img in img_elements:
+            if atts:
+                attachment_obj = atts[0].get('styles', {}).get('attachment', {})
+                subs = attachment_obj.get('all_subattachments', {}).get('nodes', [])
+
+                if subs:
+                    # 多圖貼文：從 all_subattachments 提取
+                    for sub in subs:
+                        media = sub.get('media', {})
+                        uri = self._extract_best_image_uri(media)
+                        if uri:
+                            image_urls.append(uri)
+                else:
+                    # 單圖貼文：直接從 attachment.media 提取
+                    media = attachment_obj.get('media', {})
+                    if media:
+                        uri = self._extract_best_image_uri(media)
+                        if uri:
+                            image_urls.append(uri)
+
+                # 備用：遍歷所有 attachments
+                if not image_urls and len(atts) > 1:
+                    for att in atts:
+                        att_media = att.get('styles', {}).get('attachment', {}).get('media', {})
+                        if att_media:
+                            uri = self._extract_best_image_uri(att_media)
+                            if uri:
+                                image_urls.append(uri)
+        except:
+            pass
+
+        return {
+            'pfbid': pfbid,
+            'post_id': post_id,
+            'creation_time': creation_time,
+            'full_message': message,
+            'message_preview': message[:60] if message else '',
+            'image_urls': image_urls,
+            'owner_id': owner_id,
+        }
+
+    def _find_creation_time(self, obj, depth=0):
+        """
+        遞迴搜尋 JSON 物件中的 creation_time 欄位
+        只匹配合理的 Unix 時間戳（> 1000000000，即 2001 年之後）
+        """
+        if depth > 15 or not isinstance(obj, (dict, list)):
+            return None
+        if isinstance(obj, dict):
+            if 'creation_time' in obj:
+                val = obj['creation_time']
                 try:
-                    src = img.get_attribute('src')
-                    if not src or 'scontent' not in src:
-                        continue
+                    val_int = int(val)
+                    if val_int > 1000000000:  # 合理的 Unix timestamp
+                        return val_int
+                except (ValueError, TypeError):
+                    pass
+            for v in obj.values():
+                result = self._find_creation_time(v, depth + 1)
+                if result:
+                    return result
+        elif isinstance(obj, list):
+            for item in obj:
+                result = self._find_creation_time(item, depth + 1)
+                if result:
+                    return result
+        return None
 
-                    # 過濾小圖
-                    exclude_patterns = ['p50x50', 'p40x40', 's50x50', 'emoji', 'static']
-                    if any(pattern in src for pattern in exclude_patterns):
-                        continue
-
-                    base_url = src.split('?')[0]
-                    if base_url not in seen_urls:
-                        seen_urls.add(base_url)
-                        image_urls.append(src)
-
-                except:
-                    continue
-
-            return image_urls[:10]  # 最多10張圖
-
-        except Exception as e:
-            print(f"提取圖片失敗: {e}")
-            return []
+    def _extract_best_image_uri(self, media: dict) -> Optional[str]:
+        """
+        從 media 物件中提取最佳解析度的圖片 URI
+        優先順序: viewer_image > photo_image > image > thumbnailImage
+        """
+        # 優先用高解析度的 viewer_image
+        for key in ['viewer_image', 'photo_image', 'image', 'thumbnailImage']:
+            img = media.get(key)
+            if isinstance(img, dict) and 'uri' in img:
+                return img['uri']
+        return None
 
     def close(self):
         """關閉瀏覽器"""

@@ -25,6 +25,7 @@ wheels/
 
 # 環境變數與機密資訊
 .env
+facebook_cookies.json
 
 # 臨時文件
 temp_fb_downloads/

@@ -480,13 +480,27 @@
 
         <!-- Tab 2: 批次抓取 -->
         <div id="tab-batch" class="tab-content">
+            <!-- Facebook 登入狀態 -->
+            <div id="fb-login-section" class="info-box" style="border-left-color: #1877f2; margin-bottom: 20px;">
+                <p><strong>🔐 Facebook 登入狀態</strong></p>
+                <p id="fb-login-status" style="margin: 8px 0;">檢查中...</p>
+                <button type="button" id="fbLoginBtn" class="btn-submit" 
+                    style="background: #1877f2; max-width: 260px; margin-top: 8px;"
+                    onclick="facebookLogin()">
+                    🔑 登入 Facebook
+                </button>
+                <p style="font-size: 12px; color: #666; margin-top: 8px;">
+                    批次抓取需要登入 Facebook 才能存取粉絲頁貼文。點擊上方按鈕會開啟 Chrome 瀏覽器，請在其中登入後等待系統自動儲存。
+                </p>
+            </div>
+
             <div class="info-box">
-                <p><strong>智能批次抓取說明：</strong></p>
-                <p>1. 輸入 Facebook 粉絲團的 URL（例如：https://www.facebook.com/yourpage）</p>
-                <p>2. 選擇起始日期，系統會自動滾動並抓取該日期<strong>之後</strong>的所有貼文</p>
-                <p>3. 🔄 系統會持續自動滾動，直到遇到早於設定日期的貼文才停止</p>
-                <p>4. 📊 抓取完成後會顯示所有符合條件的貼文供您預覽</p>
-                <p>5. 💡 這個功能特別適合定期同步粉絲團的最新貼文</p>
+                <p><strong>批次抓取與發布說明：</strong></p>
+                <p>1. 輸入 Facebook 粉絲團的 URL 和起始日期</p>
+                <p>2. 設定標籤、分類和發布語言（與單篇發布相同）</p>
+                <p>3. 點擊「開始抓取」，系統會自動滾動抓取該日期<strong>之後</strong>的所有貼文</p>
+                <p>4. 抓取完成後預覽貼文清單，勾選要發布的貼文後點擊「一鍵發布」</p>
+                <p>5. 📅 發布日期將自動使用 Facebook 貼文的原始日期（預設時間 20:00）</p>
             </div>
 
             <div id="message-batch" class="message"></div>
@@ -504,13 +518,55 @@
                 </div>
 
                 <div class="form-group">
-                    <label for="since_date">起始日期 *</label>
+                    <label for="since_date">起始日期 *（抓取此日期之後的貼文）</label>
                     <input
                         type="date"
                         id="since_date"
                         name="since_date"
                         required
                     >
+                </div>
+
+                <div class="form-group">
+                    <label>中文版 - 文章標籤（可多選）</label>
+                    <div class="checkbox-group" id="batch-tags-container">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>中文版 - 文章分類（可多選）</label>
+                    <div class="checkbox-group" id="batch-categories-container">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>英文版 - 文章標籤（可多選）</label>
+                    <div class="checkbox-group" id="batch-tags-container-en">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>英文版 - 文章分類（可多選）</label>
+                    <div class="checkbox-group" id="batch-categories-container-en">
+                        <div class="checkbox-loading">載入中...</div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>發布語言（可多選）</label>
+                    <div class="checkbox-group">
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="batch-lang-zh" name="batch-languages" value="zh" checked>
+                            <label for="batch-lang-zh">中文</label>
+                        </div>
+                        <div class="checkbox-item">
+                            <input type="checkbox" id="batch-lang-en" name="batch-languages" value="en">
+                            <label for="batch-lang-en">英文（將使用 AI 自動翻譯）</label>
+                        </div>
+                    </div>
                 </div>
 
                 <button type="submit" class="btn-submit" id="batchSubmitBtn">
@@ -527,11 +583,6 @@
                 <p class="loading-text" style="font-size: 12px; margin-top: 5px; color: #666;">
                     ⏱️ 預計需要 2-5 分鐘（取決於貼文數量），請耐心等候
                 </p>
-                <div id="progress-info" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 5px; display: none;">
-                    <p class="loading-text" style="font-size: 11px; color: #888;">
-                        💡 提示：批次功能會持續滾動直到所有符合日期條件的貼文都被抓取
-                    </p>
-                </div>
             </div>
 
             <!-- 結果顯示 -->
@@ -541,16 +592,40 @@
                 <table class="posts-table" id="posts-table">
                     <thead>
                         <tr>
-                            <th style="width: 20%">標題</th>
-                            <th style="width: 10%">日期</th>
-                            <th style="width: 30%">內容預覽</th>
-                            <th style="width: 10%">圖片數</th>
-                            <th style="width: 30%">圖片預覽</th>
+                            <th style="width: 4%">
+                                <input type="checkbox" id="select-all-posts" checked title="全選/取消全選">
+                            </th>
+                            <th style="width: 15%">標題</th>
+                            <th style="width: 8%">日期</th>
+                            <th style="width: 20%">內容預覽</th>
+                            <th style="width: 18%">貼文連結</th>
+                            <th style="width: 6%">圖片數</th>
+                            <th style="width: 29%">圖片預覽</th>
                         </tr>
                     </thead>
                     <tbody id="posts-tbody">
                     </tbody>
                 </table>
+
+                <button type="button" class="btn-submit" id="batchPublishBtn" style="margin-top: 25px; background: linear-gradient(135deg, #28a745 0%, #20c997 100%);">
+                    🚀 一鍵發布選取的貼文到 WordPress
+                </button>
+            </div>
+
+            <!-- 發布進度 -->
+            <div class="loading" id="loading-batch-publish">
+                <div class="spinner"></div>
+                <p class="loading-text">正在批次發布貼文到 WordPress...</p>
+                <p class="loading-text" id="batch-publish-progress" style="font-size: 13px; margin-top: 10px; color: #333; font-weight: 600;"></p>
+                <p class="loading-text" style="font-size: 12px; margin-top: 5px; color: #666;">
+                    每篇貼文需抓取內容、下載圖片、上傳到 WordPress，請耐心等候
+                </p>
+            </div>
+
+            <!-- 發布結果 -->
+            <div id="batch-publish-results" style="display: none; margin-top: 20px;">
+                <div id="batch-publish-summary" class="results-summary"></div>
+                <div id="batch-publish-details" style="margin-top: 15px;"></div>
             </div>
         </div>
     </div>
@@ -571,6 +646,45 @@
             document.getElementById(`tab-${tabName}`).classList.add('active');
         }
 
+        // 全域變數存放抓取的貼文
+        let scrapedPosts = [];
+
+        // 通用 checkbox 載入函數
+        async function loadCheckboxList(apiUrl, containerId, nameAttr, idPrefix) {
+            try {
+                const response = await fetch(apiUrl);
+                const result = await response.json();
+                const container = document.getElementById(containerId);
+
+                if (result.success && result.data.length > 0) {
+                    container.innerHTML = '';
+                    result.data.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'checkbox-item';
+
+                        const checkbox = document.createElement('input');
+                        checkbox.type = 'checkbox';
+                        checkbox.id = `${idPrefix}-${item.id}`;
+                        checkbox.value = item.id;
+                        checkbox.name = nameAttr;
+
+                        const label = document.createElement('label');
+                        label.htmlFor = `${idPrefix}-${item.id}`;
+                        label.textContent = item.name;
+
+                        div.appendChild(checkbox);
+                        div.appendChild(label);
+                        container.appendChild(div);
+                    });
+                } else {
+                    container.innerHTML = '<div class="checkbox-loading">無可用項目</div>';
+                }
+            } catch (error) {
+                console.error(`載入 ${containerId} 失敗:`, error);
+                document.getElementById(containerId).innerHTML = '<div class="checkbox-loading">載入失敗</div>';
+            }
+        }
+
         // 設置今天的日期為預設值
         document.addEventListener('DOMContentLoaded', function() {
             const today = new Date().toISOString().split('T')[0];
@@ -583,7 +697,80 @@
             // 載入英文版標籤和分類
             loadTagsEn();
             loadCategoriesEn();
+
+            // 載入批次頁面的標籤和分類
+            loadCheckboxList('/api/tags', 'batch-tags-container', 'batch-tags', 'batch-tag');
+            loadCheckboxList('/api/categories', 'batch-categories-container', 'batch-categories', 'batch-cat');
+            loadCheckboxList('/api/tags-en', 'batch-tags-container-en', 'batch-tags-en', 'batch-tag-en');
+            loadCheckboxList('/api/categories-en', 'batch-categories-container-en', 'batch-categories-en', 'batch-cat-en');
+
+            // 檢查 Facebook 登入狀態
+            checkFacebookLoginStatus();
         });
+
+        // 檢查 Facebook 登入狀態
+        async function checkFacebookLoginStatus() {
+            try {
+                const response = await fetch('/api/facebook/login-status');
+                const result = await response.json();
+                const statusEl = document.getElementById('fb-login-status');
+                const loginBtn = document.getElementById('fbLoginBtn');
+                if (result.logged_in) {
+                    statusEl.innerHTML = '✅ <span style="color: #28a745; font-weight: bold;">已登入</span>（cookies 有效）';
+                    loginBtn.style.background = '#6c757d';
+                    loginBtn.textContent = '🔄 重新登入';
+                } else {
+                    statusEl.innerHTML = '❌ <span style="color: #dc3545; font-weight: bold;">尚未登入</span>（需要先登入才能批次抓取）';
+                    loginBtn.style.background = '#1877f2';
+                    loginBtn.textContent = '🔑 登入 Facebook';
+                }
+            } catch (error) {
+                document.getElementById('fb-login-status').innerHTML = '⚠️ 無法檢查登入狀態';
+            }
+        }
+
+        // Facebook 登入
+        async function facebookLogin() {
+            const btn = document.getElementById('fbLoginBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ 正在開啟瀏覽器...';
+            document.getElementById('fb-login-status').innerHTML = '🔄 正在開啟 Chrome 瀏覽器，請在其中登入 Facebook...';
+
+            try {
+                const response = await fetch('/api/facebook/login', { method: 'POST' });
+                const result = await response.json();
+                if (result.success) {
+                    document.getElementById('fb-login-status').innerHTML = 
+                        '🔄 <span style="color: #ffc107; font-weight: bold;">Chrome 瀏覽器已開啟</span>，請在其中登入 Facebook。登入完成後此處會自動更新。';
+                    btn.textContent = '⏳ 等待登入中...';
+                    // 每 5 秒檢查一次登入狀態
+                    const checkInterval = setInterval(async () => {
+                        const statusResp = await fetch('/api/facebook/login-status');
+                        const statusResult = await statusResp.json();
+                        if (statusResult.logged_in) {
+                            clearInterval(checkInterval);
+                            checkFacebookLoginStatus();
+                            btn.disabled = false;
+                            showMessage('message-batch', '✅ Facebook 登入成功！現在可以開始批次抓取。', 'success');
+                        }
+                    }, 5000);
+                    // 5 分鐘後停止檢查
+                    setTimeout(() => {
+                        clearInterval(checkInterval);
+                        btn.disabled = false;
+                        checkFacebookLoginStatus();
+                    }, 300000);
+                } else {
+                    document.getElementById('fb-login-status').innerHTML = '❌ 開啟瀏覽器失敗: ' + (result.error || '未知錯誤');
+                    btn.disabled = false;
+                    btn.textContent = '🔑 登入 Facebook';
+                }
+            } catch (error) {
+                document.getElementById('fb-login-status').innerHTML = '❌ 連線失敗: ' + error.message;
+                btn.disabled = false;
+                btn.textContent = '🔑 登入 Facebook';
+            }
+        }
 
         // 載入標籤
         async function loadTags() {
@@ -867,6 +1054,7 @@
             // 隱藏之前的訊息和結果
             messageDiv.className = 'message';
             resultsContainer.style.display = 'none';
+            document.getElementById('batch-publish-results').style.display = 'none';
 
             const formData = {
                 page_url: document.getElementById('page_url').value.trim(),
@@ -900,6 +1088,8 @@
                 const result = await response.json();
 
                 if (result.success) {
+                    // 儲存抓取的貼文到全域變數
+                    scrapedPosts = result.posts;
                     showMessage('message-batch', `✅ ${result.message}`, 'success');
                     displayPosts(result.posts);
                 } else {
@@ -913,6 +1103,12 @@
             }
         });
 
+        // 全選/取消全選
+        document.getElementById('select-all-posts').addEventListener('change', function() {
+            const checkboxes = document.querySelectorAll('input[name="select-post"]');
+            checkboxes.forEach(cb => cb.checked = this.checked);
+        });
+
         // 顯示貼文列表
         function displayPosts(posts) {
             const tbody = document.getElementById('posts-tbody');
@@ -921,8 +1117,13 @@
 
             tbody.innerHTML = '';
 
-            posts.forEach(post => {
+            posts.forEach((post, index) => {
                 const row = document.createElement('tr');
+
+                // 勾選框
+                const checkCell = document.createElement('td');
+                checkCell.innerHTML = `<input type="checkbox" name="select-post" value="${index}" checked>`;
+                row.appendChild(checkCell);
 
                 // 標題
                 const titleCell = document.createElement('td');
@@ -938,6 +1139,12 @@
                 const contentCell = document.createElement('td');
                 contentCell.innerHTML = `<div class="post-content">${post.content}</div>`;
                 row.appendChild(contentCell);
+
+                // 貼文連結
+                const urlCell = document.createElement('td');
+                const shortUrl = post.url ? post.url.replace('https://www.facebook.com/', '') : '';
+                urlCell.innerHTML = `<a href="${post.url}" target="_blank" style="font-size: 11px; word-break: break-all; color: #1877f2;">${shortUrl}</a>`;
+                row.appendChild(urlCell);
 
                 // 圖片數量
                 const countCell = document.createElement('td');
@@ -964,12 +1171,120 @@
                 tbody.appendChild(row);
             });
 
+            // 重置全選
+            document.getElementById('select-all-posts').checked = true;
+
             // 顯示摘要
-            resultsSummary.innerHTML = `📊 找到 <strong>${posts.length}</strong> 個貼文`;
+            resultsSummary.innerHTML = `📊 找到 <strong>${posts.length}</strong> 個貼文，請勾選要發布的貼文後點擊下方按鈕`;
 
             // 顯示結果容器
             resultsContainer.style.display = 'block';
             resultsContainer.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        // 批次發布
+        document.getElementById('batchPublishBtn').addEventListener('click', async function() {
+            // 收集選取的貼文
+            const selectedIndices = [];
+            document.querySelectorAll('input[name="select-post"]:checked').forEach(cb => {
+                selectedIndices.push(parseInt(cb.value));
+            });
+
+            if (selectedIndices.length === 0) {
+                showMessage('message-batch', '請至少選擇一篇貼文', 'error');
+                return;
+            }
+
+            const selectedPosts = selectedIndices.map(i => scrapedPosts[i]);
+
+            // 收集批次標籤/分類/語言
+            const batchTags = [...document.querySelectorAll('input[name="batch-tags"]:checked')].map(cb => parseInt(cb.value));
+            const batchCategories = [...document.querySelectorAll('input[name="batch-categories"]:checked')].map(cb => parseInt(cb.value));
+            const batchTagsEn = [...document.querySelectorAll('input[name="batch-tags-en"]:checked')].map(cb => parseInt(cb.value));
+            const batchCategoriesEn = [...document.querySelectorAll('input[name="batch-categories-en"]:checked')].map(cb => parseInt(cb.value));
+            const batchLanguages = [...document.querySelectorAll('input[name="batch-languages"]:checked')].map(cb => cb.value);
+
+            if (batchLanguages.length === 0) {
+                showMessage('message-batch', '請至少選擇一種發布語言', 'error');
+                return;
+            }
+
+            // 確認發布
+            if (!confirm(`確定要發布 ${selectedPosts.length} 篇貼文嗎？\n\n語言：${batchLanguages.join(', ')}\n\n發布日期將使用每篇貼文的 Facebook 原始日期。`)) {
+                return;
+            }
+
+            // 顯示載入狀態
+            const publishBtn = this;
+            publishBtn.disabled = true;
+            document.getElementById('loading-batch-publish').classList.add('active');
+            document.getElementById('batch-publish-progress').textContent = `準備發布 ${selectedPosts.length} 篇貼文...`;
+            document.getElementById('batch-publish-results').style.display = 'none';
+
+            try {
+                const response = await fetch('/api/batch/publish', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        posts: selectedPosts,
+                        tags: batchTags,
+                        categories: batchCategories,
+                        tags_en: batchTagsEn,
+                        categories_en: batchCategoriesEn,
+                        languages: batchLanguages
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    displayBatchPublishResults(result);
+                    showMessage('message-batch', `✅ ${result.message}`, 'success');
+                } else {
+                    showMessage('message-batch', `❌ 發布失敗: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                showMessage('message-batch', `❌ 發生錯誤: ${error.message}`, 'error');
+            } finally {
+                publishBtn.disabled = false;
+                document.getElementById('loading-batch-publish').classList.remove('active');
+            }
+        });
+
+        // 顯示批次發布結果
+        function displayBatchPublishResults(result) {
+            const container = document.getElementById('batch-publish-results');
+            const summary = document.getElementById('batch-publish-summary');
+            const details = document.getElementById('batch-publish-details');
+
+            summary.innerHTML = `📊 批次發布完成：成功 <strong>${result.success_count}</strong> / ${result.total} 篇`;
+
+            let detailsHtml = '';
+            result.results.forEach(r => {
+                const bgColor = r.success ? '#d4edda' : '#f8d7da';
+                const borderColor = r.success ? '#c3e6cb' : '#f5c6cb';
+                const statusIcon = r.success ? '✅' : '❌';
+
+                detailsHtml += `<div style="padding: 12px; margin-bottom: 8px; border-radius: 8px; background: ${bgColor}; border: 1px solid ${borderColor};">`;
+                detailsHtml += `<strong>${statusIcon} [${r.index}] ${r.title}</strong>`;
+                detailsHtml += ` <span style="color: #999; font-size: 12px;">(${r.date})</span>`;
+
+                if (r.published_posts && r.published_posts.length > 0) {
+                    r.published_posts.forEach(pp => {
+                        detailsHtml += `<br><span style="font-size: 13px; margin-left: 20px;">📝 ${pp.language_name}版: <a href="${pp.post_url}" target="_blank">${pp.title}</a> (ID: ${pp.post_id})</span>`;
+                    });
+                }
+
+                if (r.error) {
+                    detailsHtml += `<br><span style="color: #721c24; font-size: 13px; margin-left: 20px;">錯誤: ${r.error}</span>`;
+                }
+
+                detailsHtml += '</div>';
+            });
+
+            details.innerHTML = detailsHtml;
+            container.style.display = 'block';
+            container.scrollIntoView({ behavior: 'smooth' });
         }
     </script>
 </body>

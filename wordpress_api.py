@@ -116,6 +116,42 @@ class WordPressAPI:
             traceback.print_exc()
             return None
 
+    def post_exists_by_title(self, title: str, post_type: str = 'news') -> Optional[int]:
+        """
+        檢查指定 post_type 中是否已存在相同標題的文章
+
+        Args:
+            title: 文章標題
+            post_type: 文章類型
+
+        Returns:
+            若已存在則回傳文章 ID，否則回傳 None
+        """
+        url = f"{self.api_base}/{post_type}"
+        params = {
+            'search': title,
+            'per_page': 10,
+            'status': 'publish,draft,pending,private',
+        }
+
+        try:
+            response = requests.get(url, params=params, auth=self.auth, timeout=30)
+            response.raise_for_status()
+            posts = response.json()
+
+            for post in posts:
+                existing_title = post.get('title', {}).get('rendered', '')
+                # WordPress 會將 HTML entities 編碼，需要解碼後比對
+                import html as html_mod
+                existing_title_decoded = html_mod.unescape(existing_title).strip()
+                if existing_title_decoded == title.strip():
+                    return post.get('id')
+
+            return None
+        except Exception as e:
+            print(f"檢查文章標題是否重複時出錯: {e}")
+            return None
+
     def create_post(self,
                     title: str,
                     content: str,
