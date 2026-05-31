@@ -424,13 +424,19 @@ class FacebookPageScraper:
         # 啟用效能日誌以攔截 GraphQL API 回應
         chrome_options.set_capability('goog:loggingPrefs', {'performance': 'ALL'})
 
-        system_chromedriver = shutil.which('chromedriver')
-        if not system_chromedriver:
-            raise RuntimeError("找不到 chromedriver")
-
-        print(f"使用系統 ChromeDriver: {system_chromedriver}")
-        service = Service(system_chromedriver)
-        self.driver = webdriver.Chrome(service=service, options=chrome_options)
+        # 優先使用 Selenium Manager 自動匹配當前 Chrome 版本的 driver
+        # 可避免 Chrome 自動更新後出現 driver 版本不相容問題。
+        try:
+            print("使用 Selenium Manager 自動匹配 ChromeDriver...")
+            self.driver = webdriver.Chrome(options=chrome_options)
+        except Exception as e:
+            print(f"Selenium Manager 啟動失敗，改用系統 ChromeDriver: {e}")
+            system_chromedriver = shutil.which('chromedriver')
+            if not system_chromedriver:
+                raise RuntimeError("找不到可用的 chromedriver")
+            print(f"使用系統 ChromeDriver: {system_chromedriver}")
+            service = Service(system_chromedriver)
+            self.driver = webdriver.Chrome(service=service, options=chrome_options)
 
         # 反自動化偵測
         self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
