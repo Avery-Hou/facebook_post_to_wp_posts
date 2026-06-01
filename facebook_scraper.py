@@ -499,13 +499,17 @@ class FacebookPageScraper:
         chrome_options.add_argument('--disable-dev-shm-usage')
         chrome_options.add_argument('--window-size=1200,800')
 
-        system_chromedriver = shutil.which('chromedriver')
-        if not system_chromedriver:
-            print("❌ 找不到 chromedriver")
-            return False
-
-        service = Service(system_chromedriver)
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        try:
+            print("使用 Selenium Manager 自動匹配 ChromeDriver...")
+            driver = webdriver.Chrome(options=chrome_options)
+        except Exception as e:
+            print(f"Selenium Manager 啟動失敗，改用系統 ChromeDriver: {e}")
+            system_chromedriver = shutil.which('chromedriver')
+            if not system_chromedriver:
+                print("❌ 找不到可用的 chromedriver")
+                return False
+            service = Service(system_chromedriver)
+            driver = webdriver.Chrome(service=service, options=chrome_options)
 
         try:
             driver.get('https://www.facebook.com/login')
@@ -662,6 +666,10 @@ class FacebookPageScraper:
             no_new_count = 0
             found_old_post = False
             scrolls_after_old = 0  # 找到舊貼文後的額外滾動次數
+            # 某些粉絲頁載入較慢，需更保守的停止條件避免過早中止
+            min_scrolls_before_idle_stop = 20
+            idle_stop_threshold = 12
+            extra_scrolls_after_old = 5
 
             print("\n開始滾動並攔截 GraphQL 回應...")
             print("=" * 60)
@@ -689,7 +697,7 @@ class FacebookPageScraper:
             while scroll_count < max_scrolls:
                 # 滾動
                 self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(4)
+                time.sleep(5)
 
                 # 從 performance logs 提取 GraphQL 回應
                 new_posts = self._extract_posts_from_perf_logs(page_id)
@@ -712,17 +720,30 @@ class FacebookPageScraper:
                     print(f"  滾動 #{scroll_count}: 新增 {new_found} 個，累計 {len(post_map)} 個")
                 else:
                     no_new_count += 1
+                    print(f"  滾動 #{scroll_count}: 無新增（連續 {no_new_count} 次）")
 
-                if no_new_count >= 5:
-                    print(f"  連續 {no_new_count} 次無新內容，停止滾動")
+                if no_new_count >= idle_stop_threshold and scroll_count >= min_scrolls_before_idle_stop:
+                    print(f"  連續 {no_new_count} 次無新內容，且已滾動 {scroll_count} 次，停止滾動")
                     break
 
                 # 如果已找到早於目標日期的貼文，再多滾動 3 次就停
                 if found_old_post:
                     scrolls_after_old += 1
-                    if scrolls_after_old >= 3:
+                    if scrolls_after_old >= extra_scrolls_after_old:
                         print(f"  已找到早於 {since_date} 的貼文，額外滾動 {scrolls_after_old} 次後停止")
                         break
+
+            # Step 1.5: DOM fallback
+            # 某些粉絲頁會在頁面上顯示更早貼文，但不再透過 GraphQL 回應暴露完整資料。
+            dom_posts = self._extract_posts_from_dom(page_id)
+            dom_added = 0
+            for key, info in dom_posts.items():
+                if key in post_map:
+                    continue
+                post_map[key] = info
+                dom_added += 1
+            if dom_added:
+                print(f"  DOM fallback: 額外補到 {dom_added} 個貼文，累計 {len(post_map)} 個")
 
             # 過濾出日期範圍內的貼文
             filtered_posts = []
@@ -773,15 +794,18 @@ class FacebookPageScraper:
             # 內容直接使用 GraphQL 的 message，僅訪問 URL 來抓取完整圖片
             detailed_posts = []
             for i, info in enumerate(filtered_posts):
-                pfbid = info['pfbid']
+                pfbid = info.get('pfbid', '')
                 post_id = info.get('post_id', '')
                 ct = info.get('creation_time')
                 post_date = datetime.fromtimestamp(ct).strftime('%Y-%m-%d') if ct else None
                 content = info.get('full_message', '')
                 graphql_images = info.get('image_urls', [])
+                source = info.get('source', 'graphql')
 
                 # 構建 permalink URL
-                if page_id:
+                if info.get('url'):
+                    post_url = info['url']
+                elif page_id:
                     post_url = f"https://www.facebook.com/permalink.php?story_fbid={pfbid}&id={page_id}"
                 else:
                     post_url = f"https://www.facebook.com/permalink.php?story_fbid={pfbid}"
@@ -789,11 +813,20 @@ class FacebookPageScraper:
                 print(f"\n[{i+1}/{len(filtered_posts)}] 處理: post_id={post_id}")
                 if post_date:
                     print(f"  📅 日期: {post_date}")
-                print(f"  📝 GraphQL 內容: {content[:50]}... ({len(content)} 字)")
-                print(f"  🖼️ GraphQL 圖片: {len(graphql_images)} 張")
+                print(f"  📝 來源: {source}")
+                print(f"  📝 內容預覽: {content[:50]}... ({len(content)} 字)")
+                print(f"  🖼️ 圖片: {len(graphql_images)} 張")
+
+                if source == 'dom' or not content or len(content.strip()) < 5:
+                    print(f"  🔄 使用 DOM fallback 開啟貼文補抓內容")
+                    dom_detail = self._fetch_post_detail_from_url(post_url)
+                    if dom_detail.get('content'):
+                        content = dom_detail['content']
+                    if dom_detail.get('image_urls'):
+                        graphql_images = dom_detail['image_urls']
 
                 if not content or len(content.strip()) < 5:
-                    print(f"  ⚠️ GraphQL 無內容，跳過")
+                    print(f"  ⚠️ 無法取得內容，跳過")
                     continue
 
                 # 使用 GraphQL 提供的圖片（已確認為該貼文的圖片）
@@ -826,6 +859,181 @@ class FacebookPageScraper:
             import traceback
             traceback.print_exc()
             return []
+
+    def _extract_posts_from_dom(self, page_id: Optional[str] = None) -> Dict:
+        """
+        從目前已載入的 DOM 貼文卡片提取候選貼文。
+        適用於 GraphQL 已停止回傳，但頁面實際仍可往下滑出更多貼文的情況。
+        """
+        import re
+        from datetime import datetime
+
+        posts = {}
+        stable_rounds = 0
+        last_count = 0
+
+        for _ in range(12):
+            try:
+                cards = self.driver.execute_script("""
+                    const makeAbs = (href) => {
+                        if (!href) return '';
+                        try { return new URL(href, location.origin).toString(); }
+                        catch { return href; }
+                    };
+
+                    const cards = [];
+                    for (const article of Array.from(document.querySelectorAll('article'))) {
+                        const links = Array.from(article.querySelectorAll('a[href]'))
+                            .map(a => a.getAttribute('href') || '')
+                            .filter(h => /fbid=|story_fbid=|\/reel\//.test(h));
+                        if (!links.length) continue;
+
+                        const text = (article.innerText || '').trim();
+                        if (!text) continue;
+
+                        const lines = text.split('\n').map(t => t.trim()).filter(Boolean);
+                        let dateText = '';
+                        for (const line of lines) {
+                            if (/^(今天|昨天|\d+分鐘|\d+小時|\d+天|\d+月\d+日|\d{4}年\d+月\d+日)/.test(line)) {
+                                dateText = line;
+                                break;
+                            }
+                        }
+
+                        cards.push({
+                            url: makeAbs(links[0]),
+                            text,
+                            date_text: dateText,
+                        });
+                    }
+                    return cards;
+                """)
+            except Exception:
+                cards = []
+
+            for card in cards:
+                url = card.get('url', '')
+                if not url:
+                    continue
+
+                post_id = None
+                m = re.search(r'[?&]fbid=(\d{8,})', url)
+                if m:
+                    post_id = m.group(1)
+                if not post_id:
+                    m = re.search(r'/reel/(\d+)', url)
+                    if m:
+                        post_id = m.group(1)
+                if not post_id:
+                    m = re.search(r'[?&]story_fbid=([^&]+)', url)
+                    if m:
+                        post_id = m.group(1)
+                if not post_id:
+                    continue
+
+                creation_time = self._parse_facebook_date_text(card.get('date_text', ''))
+                text = card.get('text', '')
+                lines = [line.strip() for line in text.split('\n') if line.strip()]
+                preview = ''
+                if lines:
+                    preview = lines[1] if len(lines) > 1 else lines[0]
+
+                posts[post_id] = {
+                    'pfbid': post_id,
+                    'post_id': post_id,
+                    'creation_time': creation_time,
+                    'full_message': '',
+                    'message_preview': preview[:60],
+                    'image_urls': [],
+                    'owner_id': page_id,
+                    'url': url,
+                    'source': 'dom',
+                }
+
+            if len(posts) == last_count:
+                stable_rounds += 1
+            else:
+                stable_rounds = 0
+                last_count = len(posts)
+
+            if stable_rounds >= 3:
+                break
+
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(2)
+
+        if posts:
+            print(f"  📌 從 DOM 貼文卡片提取到 {len(posts)} 個候選貼文")
+        return posts
+
+    def _parse_facebook_date_text(self, text: str) -> Optional[int]:
+        """將 Facebook 頁面上的日期文字轉成 Unix timestamp。"""
+        import re
+        from datetime import datetime, timedelta
+
+        if not text:
+            return None
+
+        now = datetime.now()
+        text = text.strip()
+
+        try:
+            if text.startswith('今天'):
+                return int(now.timestamp())
+            if text.startswith('昨天'):
+                return int((now - timedelta(days=1)).timestamp())
+
+            m = re.match(r'^(\d+)分鐘', text)
+            if m:
+                return int((now - timedelta(minutes=int(m.group(1)))).timestamp())
+
+            m = re.match(r'^(\d+)小時', text)
+            if m:
+                return int((now - timedelta(hours=int(m.group(1)))).timestamp())
+
+            m = re.match(r'^(\d+)天', text)
+            if m:
+                return int((now - timedelta(days=int(m.group(1)))).timestamp())
+
+            m = re.match(r'^(\d{4})年(\d{1,2})月(\d{1,2})日', text)
+            if m:
+                dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+                return int(dt.timestamp())
+
+            m = re.match(r'^(\d{1,2})月(\d{1,2})日', text)
+            if m:
+                dt = datetime(now.year, int(m.group(1)), int(m.group(2)))
+                return int(dt.timestamp())
+        except Exception:
+            return None
+
+        return None
+
+    def _fetch_post_detail_from_url(self, post_url: str) -> Dict:
+        """開啟單篇貼文頁面，補抓內容與圖片。"""
+        result = {
+            'content': '',
+            'image_urls': [],
+        }
+
+        try:
+            self.driver.get(post_url)
+            time.sleep(3)
+
+            try:
+                see_more_buttons = self.driver.find_elements(By.XPATH, "//div[contains(text(), '查看更多') or contains(text(), 'See more') or contains(text(), '更多')]")
+                if see_more_buttons:
+                    see_more_buttons[0].click()
+                    time.sleep(1)
+            except Exception:
+                pass
+
+            result['content'] = self.base_scraper._extract_post_text()
+            result['image_urls'] = self.base_scraper._extract_image_urls()
+        except Exception as e:
+            print(f"  ⚠️ DOM fallback 補抓失敗: {e}")
+
+        return result
 
     def _extract_posts_from_page_source(self, page_id: Optional[str] = None) -> Dict:
         """
